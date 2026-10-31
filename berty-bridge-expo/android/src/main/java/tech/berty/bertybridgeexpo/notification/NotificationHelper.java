@@ -13,6 +13,8 @@ import androidx.annotation.RequiresApi;
 public class NotificationHelper extends ContextWrapper {
     public static final String CHANNEL_ID_MESSAGE = "tech.berty.notification.message";
     public static final String CHANNEL_NAME_MESSAGE = "Berty Message";
+    public static final String CHANNEL_ID_SERVICE = "tech.berty.notification.service";
+    public static final String CHANNEL_NAME_SERVICE = "Berty background service";
 
     private NotificationManager manager;
 
@@ -35,6 +37,16 @@ public class NotificationHelper extends ContextWrapper {
         notificationChannel.setLightColor(Color.GRAY);
         notificationChannel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
         getManager().createNotificationChannel(notificationChannel);
+
+        // Silent, low importance channel for the ongoing background service notification
+        NotificationChannel serviceChannel = new NotificationChannel(
+            CHANNEL_ID_SERVICE,
+            CHANNEL_NAME_SERVICE,
+            NotificationManager.IMPORTANCE_LOW
+        );
+        serviceChannel.setShowBadge(false);
+        serviceChannel.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
+        getManager().createNotificationChannel(serviceChannel);
     }
 
     public NotificationManager getManager() {

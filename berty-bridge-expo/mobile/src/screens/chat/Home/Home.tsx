@@ -2,8 +2,10 @@ import * as Network from 'expo-network'
 import pickBy from 'lodash/pickBy'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useFocusEffect } from '@react-navigation/native'
+import { GoBridge } from 'berty-bridge-expo'
 import { StatusBar } from 'expo-status-bar'
-import { ScrollView, View } from 'react-native'
+import { Alert, BackHandler, Platform, ScrollView, View } from 'react-native'
 import { useSelector } from 'react-redux'
 import { SafeAreaView } from 'react-native-safe-area-context'
 
@@ -73,6 +75,30 @@ export const Home: ScreenFC<'Chat.Home'> = ({ navigation: { navigate } }) => {
 	const { text, opacity, flex, margin, border } = useStyles()
 	const colors = useThemeColor()
 	const { t } = useTranslation()
+
+	// Android: the back gesture on the home screen asks before quitting, because quitting
+	// also stops the background service and so the delivery of messages and notifications.
+	useFocusEffect(
+		React.useCallback(() => {
+			if (Platform.OS !== 'android') {
+				return
+			}
+			const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+				Alert.alert(t('notification.quit.title'), t('notification.quit.desc'), [
+					{ text: t('notification.quit.cancel'), style: 'cancel' },
+					{
+						text: t('notification.quit.confirm'),
+						style: 'destructive',
+						onPress: () => {
+							GoBridge.quitApp().catch(err => console.warn('unable to quit the app: ', err))
+						},
+					},
+				])
+				return true
+			})
+			return () => subscription.remove()
+		}, [t]),
+	)
 
 	const scrollRef = useRef<ScrollView>(null)
 	const searching = !!searchText

@@ -249,6 +249,7 @@ public class BleDriver {
 
         if (!mGattServer.start(mLocalPid)) {
             mLogger.e(TAG, "startBleDriver: mGattServer failed to start");
+            stopBleDriver();
             return;
         }
 
@@ -289,20 +290,35 @@ public class BleDriver {
             return;
         }
 
-        if (!isStarted()) {
-            mLogger.d(TAG, "driver is not started");
-            return;
+        // Tear down whatever has been started, even if startBleDriver() failed halfway.
+        if (mAdvertiser != null) {
+            mAdvertiser.stop();
         }
-
-        mAdvertiser.stop();
-        mScanner.stop();
+        if (mScanner != null) {
+            mScanner.stop();
+        }
         mDeviceManager.closeAllDeviceConnections();
-        mGattServer.stop();
+        if (mGattServer != null) {
+            mGattServer.stop();
+        }
+        // Tell the Go side that every peer is gone: the connections are dead, and
+        // without this the stale peers make it believe it is still connected.
+        mPeerManager.unregisterAllPeers();
         setStarted(false);
-        mHandshakeLooper.quit();
-        mCallbacksLooper.quit();
-        mWriteLooper.quit();
-        mReadLooper.quit();
+
+        if (mHandshakeLooper != null) mHandshakeLooper.quit();
+        if (mCallbacksLooper != null) mCallbacksLooper.quit();
+        if (mWriteLooper != null) mWriteLooper.quit();
+        if (mReadLooper != null) mReadLooper.quit();
+
+        // BluetoothLeAdvertiser, BluetoothLeScanner and BluetoothGattServer instances are
+        // tied to the adapter session and are no longer valid once Bluetooth has been turned
+        // off. Drop them so that the next start creates fresh ones, otherwise BLE never
+        // comes back after Bluetooth has been toggled.
+        mAdvertiser = null;
+        mScanner = null;
+        mGattServer = null;
+        setInit(false);
     }
 
     public synchronized void StopBleDriver() {
@@ -344,6 +360,10 @@ public class BleDriver {
 
                 return peerDevice.write(writer, payload, false);
             } else if (peerDevice.isServerConnected()) {
+                if (mGattServer == null) {
+                    mLogger.e(TAG, "SendToPeer error: GATT server not running");
+                    return false;
+                }
                 return mGattServer.writeAndNotify(peerDevice, payload);
             } else {
                 mLogger.e(TAG, "SendToPeer error: remote device is disconnected");

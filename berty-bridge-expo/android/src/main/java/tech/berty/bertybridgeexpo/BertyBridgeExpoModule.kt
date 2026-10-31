@@ -6,6 +6,9 @@ import android.content.IntentFilter
 import android.content.res.Resources
 import android.net.ConnectivityManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
 import android.util.Base64
 import android.util.Log
 import bertybridge.Bertybridge
@@ -39,6 +42,7 @@ import tech.berty.bertybridgeexpo.gobridge.bledriver.BleInterface
 import tech.berty.bertybridgeexpo.notification.FcmBus
 import tech.berty.bertybridgeexpo.notification.NotificationService
 import tech.berty.bertybridgeexpo.rootdir.RootDirModule
+import tech.berty.bertybridgeexpo.service.BackgroundService
 import java.io.File
 
 enum class logLevel(val value: String) : Enumerable {
@@ -112,6 +116,7 @@ class BertyBridgeExpoModule : Module() {
             bridgeMessenger = null
             remoteBridge = null
             serviceClient = null
+            appContext.reactContext?.let { BackgroundService.stop(it) }
         }
 
         OnStartObserving {
@@ -251,6 +256,41 @@ class BertyBridgeExpoModule : Module() {
             }
         }
 
+        // Keeps the process alive while the app is in the background (see BackgroundService).
+        // Must be called while the app is in the foreground, e.g. right after initBridge.
+        AsyncFunction("startBackgroundService") { title: String, text: String, promise: Promise ->
+            BackgroundService.start(getReactContext(), title, text)
+            promise.resolve(true)
+        }
+
+        AsyncFunction("stopBackgroundService") { promise: Promise ->
+            BackgroundService.stop(getReactContext())
+            promise.resolve(true)
+        }
+
+        // Fully quit the app: close the bridge, stop the service, remove the task and
+        // end the process so that nothing keeps running in the background.
+        AsyncFunction("quitApp") { promise: Promise ->
+            val context = getReactContext()
+            Thread {
+                try {
+                    bridgeMessenger?.close()
+                    remoteBridge?.close()
+                } catch (e: Exception) {
+                    Logger.e(TAG, "bridge close error", e)
+                }
+                bridgeMessenger = null
+                remoteBridge = null
+                serviceClient = null
+                BackgroundService.stop(context)
+                appContext.currentActivity?.finishAndRemoveTask()
+                promise.resolve(true)
+                Handler(Looper.getMainLooper()).postDelayed({
+                    Process.killProcess(Process.myPid())
+                }, 500)
+            }.start()
+        }
+
         AsyncFunction("closeBridge") { promise: Promise ->
             try {
                 if (bridgeMessenger != null) {
@@ -262,6 +302,7 @@ class BertyBridgeExpoModule : Module() {
                     remoteBridge = null
                 }
                 serviceClient = null
+                BackgroundService.stop(getReactContext())
                 promise.resolve(true)
             } catch (err: CodedException) {
                 promise.reject(err)
