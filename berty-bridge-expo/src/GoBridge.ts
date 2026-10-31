@@ -21,6 +21,9 @@ export interface GoBridgeInterface {
 	invokeBridgeMethod(method: string, b64message: string): Promise<string>;
 	connectService(serviceName: string, address: string): Promise<void>;
 	requestPushToken(): Promise<string>;
+	startBackgroundService(title: string, text: string): Promise<void>;
+	stopBackgroundService(): Promise<void>;
+	quitApp(): Promise<void>;
 }
 
 class GoBridge implements GoBridgeInterface {
@@ -54,6 +57,18 @@ class GoBridge implements GoBridgeInterface {
 
 	requestPushToken(): Promise<string> {
 		return BertyBridgeExpoModule.requestPushToken();
+	}
+
+	startBackgroundService(title: string, text: string): Promise<void> {
+		return BertyBridgeExpoModule.startBackgroundService(title, text);
+	}
+
+	stopBackgroundService(): Promise<void> {
+		return BertyBridgeExpoModule.stopBackgroundService();
+	}
+
+	quitApp(): Promise<void> {
+		return BertyBridgeExpoModule.quitApp();
 	}
 }
 
