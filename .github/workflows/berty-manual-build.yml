@@ -1,36 +1,86 @@
 name: Berty Manual Build
+
 on:
   workflow_dispatch:
+    inputs:
+      app_env:
+        description: "APP_ENV (preview = 'Berty Staff', installs next to the Play Store version)"
+        type: choice
+        options:
+          - preview
+          - development
+          - production
+        default: preview
+
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          fetch-depth: 0 # gomobile build embeds the version computed from git history
+
+      - name: Free disk space
+        run: |
+          # keep /usr/local/lib/android (SDK/NDK), the build needs it
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /usr/share/swift
+          df -h /
+
+      - name: Setup Go (version from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-      - name: Setup Go
-        uses: actions/setup-go@v5
+          node-version: 22.12.0 # same as .tool-versions, some deps require >= 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
-          go-version: '1.21'
-      - name: Install dependencies
+          distribution: temurin
+          java-version: 17
+
+      # Same Makefile target as the official android.yml workflow: builds
+      # berty-bridge-expo/android/libs/gobridge.aar (Go node + BLE glue) and
+      # installs the node modules of berty-bridge-expo
+      - name: Build gobridge.aar
+        working-directory: berty-bridge-expo
+        run: make android.gomobile
+
+      - name: Install app dependencies
+        working-directory: berty-bridge-expo/mobile
+        run: npm install
+
+      # The android/ project is not committed, it is generated here (this also runs
+      # the config plugins, including the manifest plugins of berty-bridge-expo)
+      - name: Expo prebuild
+        working-directory: berty-bridge-expo/mobile
+        env:
+          APP_ENV: ${{ inputs.app_env }}
+          CI: "1"
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build APK
+        working-directory: berty-bridge-expo/mobile/android
+        env:
+          APP_ENV: ${{ inputs.app_env }}
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
         run: |
-          cd berty-bridge-expo/mobile
-          yarn install --frozen-lockfile || npm install
-      - name: Grant execute permission for gradlew
-        run: chmod +x berty-bridge-expo/android/gradlew
-      - name: Build with Gradle
-        run: |
-          cd berty-bridge-expo/android
-          ./gradlew assembleDebug
+          chmod +x gradlew
+          # gomobile only builds arm64 and amd64, so only build arm64 (real phones)
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --stacktrace
+
+      # The Expo template signs release builds with the debug keystore, which is fine
+      # for testing but not for publishing
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Berty-debug
-          path: berty-bridge-expo/android/app/build/outputs/apk/debug/*.apk
+          name: berty-${{ inputs.app_env }}-apk
+          path: berty-bridge-expo/mobile/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
