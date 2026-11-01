@@ -312,6 +312,13 @@ export const SettingsHome: ScreenFC<'Settings.Home'> = () => {
 							{t('settings.home.accounts-button')}
 						</MenuItemWithIcon>
 						<DividerItem />
+						<MenuItemWithIcon
+							iconName='color-palette-outline'
+							onPress={() => navigate('Settings.Appearance')}
+						>
+							{t('settings.home.appearance-button')}
+						</MenuItemWithIcon>
+						<DividerItem />
 						{networkConfig && (
 							<MenuItemWithIcon
 								iconName='wifi-outline'

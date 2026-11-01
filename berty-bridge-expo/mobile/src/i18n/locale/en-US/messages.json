@@ -187,6 +187,11 @@
 		"appearance": {
 			"title": "Appearance",
 			"dark-button": "Dark Mode",
+			"theme-title": "Theme",
+			"mode-system": "System default",
+			"mode-light": "Light",
+			"mode-dark": "Dark",
+			"mode-black": "Black (AMOLED)",
 			"editor-button": "Theme Editor",
 			"theme-editor": {
 				"title": "Theme Editor"
@@ -540,16 +545,6 @@
 		"need-restart": {
 			"title": "Restart required",
 			"desc": "Restart Berty to save your data and enable notifications!"
-		},
-		"background-service": {
-			"title": "Berty is running in the background",
-			"desc": "This keeps you connected so you can receive messages and notifications."
-		},
-		"quit": {
-			"title": "Quit Berty?",
-			"desc": "Berty will stop running in the background. You won't receive messages or notifications until you open it again.",
-			"cancel": "Cancel",
-			"confirm": "Quit"
 		}
 	},
 	"error": {

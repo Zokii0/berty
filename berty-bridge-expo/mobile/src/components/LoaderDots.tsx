@@ -2,10 +2,11 @@ import React from 'react'
 import { View, Image, StatusBar } from 'react-native'
 
 import source from '@berty/assets/images/loader_dots.gif'
-import { useThemeColor } from '@berty/hooks'
+import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
 
 export const LoaderDots: React.FC = () => {
 	const colors = useThemeColor()
+	const isDark = useIsDarkTheme()
 
 	return (
 		<View
@@ -17,7 +18,7 @@ export const LoaderDots: React.FC = () => {
 				backgroundColor: colors['main-background'],
 			}}
 		>
-			<StatusBar backgroundColor={colors['main-background']} barStyle='dark-content' />
+			<StatusBar backgroundColor={colors['main-background']} barStyle={isDark ? 'light-content' : 'dark-content'} />
 			<Image
 				source={source}
 				style={{ width: '80%', height: '40%', maxWidth: 170, maxHeight: 80 }}

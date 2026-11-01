@@ -1,9 +1,17 @@
 diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt
---- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-10-31 10:39:40.298574328 +0000
-+++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-10-31 10:39:40.294327220 +0000
-@@ -6,6 +6,9 @@
+--- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-11-01 08:15:06.260889540 +0000
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-11-01 08:15:06.257325764 +0000
+@@ -1,11 +1,17 @@
+ package tech.berty.bertybridgeexpo
+ 
+ import android.bluetooth.BluetoothAdapter
++import android.bluetooth.BluetoothManager
+ import android.content.Context
++import android.content.Intent
+ import android.content.IntentFilter
  import android.content.res.Resources
  import android.net.ConnectivityManager
++import android.net.NetworkCapabilities
  import android.os.Build
 +import android.os.Handler
 +import android.os.Looper
@@ -11,7 +19,7 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/B
  import android.util.Base64
  import android.util.Log
  import bertybridge.Bertybridge
-@@ -39,6 +42,7 @@
+@@ -39,6 +45,7 @@
  import tech.berty.bertybridgeexpo.notification.FcmBus
  import tech.berty.bertybridgeexpo.notification.NotificationService
  import tech.berty.bertybridgeexpo.rootdir.RootDirModule
@@ -19,7 +27,7 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/B
  import java.io.File
  
  enum class logLevel(val value: String) : Enumerable {
-@@ -112,6 +116,7 @@
+@@ -112,6 +119,7 @@
              bridgeMessenger = null
              remoteBridge = null
              serviceClient = null
@@ -27,14 +35,65 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/B
          }
  
          OnStartObserving {
-@@ -251,6 +256,41 @@
+@@ -251,6 +259,92 @@
              }
          }
  
++        // true when the phone is connected to a Wi-Fi, mobile data or ethernet network (even if
++        // that network has no internet access, e.g. a local Wi-Fi mesh)
++        AsyncFunction("hasNetworkConnection") { promise: Promise ->
++            val manager = getReactContext().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
++            val capabilities = manager?.activeNetwork?.let { manager.getNetworkCapabilities(it) }
++            promise.resolve(
++                capabilities != null && (
++                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
++                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
++                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
++                )
++            )
++        }
++
++        AsyncFunction("isBluetoothEnabled") { promise: Promise ->
++            val manager = getReactContext().getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
++            promise.resolve(manager?.adapter?.isEnabled == true)
++        }
++
++        // Shows the system dialog asking the user to turn Bluetooth on
++        AsyncFunction("requestEnableBluetooth") { promise: Promise ->
++            val activity = appContext.currentActivity
++            if (activity == null) {
++                promise.resolve(false)
++            } else {
++                try {
++                    activity.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
++                    promise.resolve(true)
++                } catch (e: Exception) {
++                    Logger.e(TAG, "unable to request to enable Bluetooth", e)
++                    promise.resolve(false)
++                }
++            }
++        }
++
 +        // Keeps the process alive while the app is in the background (see BackgroundService).
 +        // Must be called while the app is in the foreground, e.g. right after initBridge.
 +        AsyncFunction("startBackgroundService") { title: String, text: String, promise: Promise ->
 +            BackgroundService.start(getReactContext(), title, text)
++            promise.resolve(true)
++        }
++
++        AsyncFunction("isBackgroundServiceEnabled") { promise: Promise ->
++            promise.resolve(BackgroundService.isEnabled(getReactContext()))
++        }
++
++        // Setting changed by the user: remembered, and applied right away
++        AsyncFunction("setBackgroundServiceEnabled") { enabled: Boolean, title: String, text: String, promise: Promise ->
++            val context = getReactContext()
++            BackgroundService.setEnabled(context, enabled)
++            if (enabled) {
++                BackgroundService.start(context, title, text)
++            } else {
++                BackgroundService.stop(context)
++            }
 +            promise.resolve(true)
 +        }
 +
@@ -69,7 +128,7 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/B
          AsyncFunction("closeBridge") { promise: Promise ->
              try {
                  if (bridgeMessenger != null) {
-@@ -262,6 +302,7 @@
+@@ -262,6 +356,7 @@
                      remoteBridge = null
                  }
                  serviceClient = null
@@ -78,8 +137,8 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/B
              } catch (err: CodedException) {
                  promise.reject(err)
 diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt
---- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-10-31 10:39:40.341524968 +0000
-+++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-10-31 10:39:40.337768838 +0000
+--- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-11-01 08:15:06.351729603 +0000
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-11-01 08:15:06.348761983 +0000
 @@ -7,14 +7,14 @@
  
  class LifecycleListener : ReactActivityLifecycleListener {
@@ -98,8 +157,8 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/L
          state = AppState.FOREGROUND
          Log.i(TAG, "onResume")
 diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java
---- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-10-31 10:39:40.321476101 +0000
-+++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-10-31 10:39:40.317897689 +0000
+--- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-11-01 08:15:06.317138909 +0000
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-11-01 08:15:06.313851950 +0000
 @@ -249,6 +249,7 @@
  
          if (!mGattServer.start(mLocalPid)) {
@@ -108,7 +167,7 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/g
              return;
          }
  
-@@ -289,20 +290,35 @@
+@@ -289,20 +290,36 @@
              return;
          }
  
@@ -121,18 +180,20 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/g
 +        }
 +        if (mScanner != null) {
 +            mScanner.stop();
-         }
--
--        mAdvertiser.stop();
--        mScanner.stop();
-         mDeviceManager.closeAllDeviceConnections();
--        mGattServer.stop();
-+        if (mGattServer != null) {
-+            mGattServer.stop();
 +        }
 +        // Tell the Go side that every peer is gone: the connections are dead, and
 +        // without this the stale peers make it believe it is still connected.
 +        mPeerManager.unregisterAllPeers();
++        // Do not wait for disconnection callbacks: they never come if Bluetooth is going off
++        mDeviceManager.clearAll();
++        if (mGattServer != null) {
++            mGattServer.stop();
+         }
+-
+-        mAdvertiser.stop();
+-        mScanner.stop();
+-        mDeviceManager.closeAllDeviceConnections();
+-        mGattServer.stop();
          setStarted(false);
 -        mHandshakeLooper.quit();
 -        mCallbacksLooper.quit();
@@ -140,7 +201,7 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/g
 -        mReadLooper.quit();
 +
 +        if (mHandshakeLooper != null) mHandshakeLooper.quit();
-+        if (mCallbacksLooper != null) mCallbacksLooper.quit();
++        if (mCallbacksLooper != null) mCallbacksLooper.quitSafely(); // let pending HandleLostPeer calls run
 +        if (mWriteLooper != null) mWriteLooper.quit();
 +        if (mReadLooper != null) mReadLooper.quit();
 +
@@ -155,7 +216,7 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/g
      }
  
      public synchronized void StopBleDriver() {
-@@ -344,6 +360,10 @@
+@@ -344,6 +361,10 @@
  
                  return peerDevice.write(writer, payload, false);
              } else if (peerDevice.isServerConnected()) {
@@ -166,9 +227,61 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/g
                  return mGattServer.writeAndNotify(peerDevice, payload);
              } else {
                  mLogger.e(TAG, "SendToPeer error: remote device is disconnected");
+diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java
+--- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java	2026-11-01 08:15:06.281871481 +0000
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java	2026-11-01 08:15:06.278526200 +0000
+@@ -87,6 +87,16 @@
+         }
+     }
+ 
++    // Forget every device (used when the driver is stopped, e.g. Bluetooth turned off):
++    // BluetoothGatt objects and states from the previous Bluetooth session are not reusable.
++    public synchronized void clearAll() {
++        mLogger.i(TAG, "clearAll called");
++        for (PeerDevice peerDevice : new java.util.ArrayList<>(mPeerDevices.values())) {
++            peerDevice.forceReset();
++        }
++        mPeerDevices.clear();
++    }
++
+     public synchronized void remove(String macAddress) {
+         mLogger.d(TAG, String.format("remove called: device=%s", mLogger.sensitiveObject(macAddress)));
+ 
+diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java
+--- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-11-01 08:15:06.306584997 +0000
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-11-01 08:15:06.303086336 +0000
+@@ -463,6 +463,28 @@
+         }
+     }
+ 
++    // Drop all the state of this device without waiting for any BLE callback.
++    // When Bluetooth is turned off the stack never calls onConnectionStateChange(), so a device
++    // that was "DISCONNECTING" would stay in that state forever and the scanner would then skip
++    // it ("client is already connected") even after Bluetooth is back.
++    public void forceReset() {
++        try {
++            if (mIsClient) {
++                closeClient();
++            } else {
++                closeServer();
++            }
++        } catch (RuntimeException e) {
++            mLogger.e(TAG, String.format("forceReset: device=%s: error while closing", mLogger.sensitiveObject(getMACAddress())), e);
++        }
++        synchronized (mLockClient) {
++            mClientState = CONNECTION_STATE.DISCONNECTED;
++        }
++        synchronized (mLockServer) {
++            mServerState = CONNECTION_STATE.DISCONNECTED;
++        }
++    }
++
+     public void closeClient() {
+         mLogger.d(TAG, String.format("closeClient called: device=%s", mLogger.sensitiveObject(getMACAddress())));
+ 
 diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java
---- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-10-31 10:39:40.310301667 +0000
-+++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-10-31 10:39:40.306302387 +0000
+--- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-11-01 08:15:06.297033908 +0000
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-11-01 08:15:06.293701315 +0000
 @@ -1,6 +1,8 @@
  package tech.berty.bertybridgeexpo.gobridge.bledriver;
  
@@ -198,10 +311,38 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/g
      public synchronized Peer get(String peerID) {
          return mPeers.get(peerID);
      }
+diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java
+--- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-11-01 08:15:06.331084844 +0000
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-11-01 08:15:06.327498586 +0000
+@@ -184,13 +184,20 @@
+         mLogger.i(TAG, "stop scanning");
+         if (mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
+             mBluetoothLeScanner.stopScan(this);
+-            setScannerState(SCANNER_STATE_DISABLED);
+         } else {
+             mLogger.e(TAG, "stop scanner error: BT adapter not running");
+         }
+-        mTask.cancel();
+-        mTimer.purge();
+-        mTimer = null;
++        // always reset the state, even if Bluetooth is off (otherwise the scanner stays "enabled")
++        setScannerState(SCANNER_STATE_DISABLED);
++        if (mTask != null) {
++            mTask.cancel();
++        }
++        if (mTimer != null) {
++            mTimer.cancel(); // also ends the timer thread
++            mTimer.purge();
++            mTimer = null;
++        }
++        foundMap.clear();
+     }
+ 
+     // Return the status of the scanner
 diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java
---- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-10-31 10:39:40.282487403 +0000
-+++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-10-31 10:39:40.134085019 +0000
-@@ -13,6 +13,8 @@
+--- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-11-01 08:15:06.239375733 +0000
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-11-01 08:15:06.235059724 +0000
+@@ -13,9 +13,21 @@
  public class NotificationHelper extends ContextWrapper {
      public static final String CHANNEL_ID_MESSAGE = "tech.berty.notification.message";
      public static final String CHANNEL_NAME_MESSAGE = "Berty Message";
@@ -210,7 +351,20 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/n
  
      private NotificationManager manager;
  
-@@ -35,6 +37,16 @@
++    public static final String ICON_MESSAGE = "ic_stat_berty";
++    public static final String ICON_SERVICE = "ic_stat_berty_service";
++
++    // Status bar icon generated by the config plugin (withAndroidNotificationIcons),
++    // with the system chat icon as a fallback.
++    public static int getSmallIcon(Context context, String name) {
++        int id = context.getResources().getIdentifier(name, "drawable", context.getPackageName());
++        return id != 0 ? id : android.R.drawable.stat_notify_chat;
++    }
++
+     public NotificationHelper(Context context) {
+         super(context);
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+@@ -35,6 +47,16 @@
          notificationChannel.setLightColor(Color.GRAY);
          notificationChannel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
          getManager().createNotificationChannel(notificationChannel);
@@ -227,10 +381,22 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/n
      }
  
      public NotificationManager getManager() {
+diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java
+--- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java	2026-11-01 08:15:06.250894753 +0000
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java	2026-11-01 08:15:06.247454315 +0000
+@@ -83,7 +83,7 @@
+         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID_MESSAGE)
+             .setContentTitle(fpush.getTitle())
+             .setContentText(fpush.getBody())
+-            .setSmallIcon(android.R.drawable.stat_notify_chat)
++            .setSmallIcon(NotificationHelper.getSmallIcon(this, NotificationHelper.ICON_MESSAGE))
+             .setCategory(Notification.CATEGORY_MESSAGE)
+             .setGroup(fpush.getConversationIdentifier())
+             .setVibrate(new long[]{125L, 75L, 125L})
 diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java
 --- a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java	1970-01-01 00:00:00.000000000 +0000
-+++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java	2026-10-31 10:39:40.328729317 +0000
-@@ -0,0 +1,102 @@
++++ b/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java	2026-11-01 08:15:06.343172416 +0000
+@@ -0,0 +1,117 @@
 +package tech.berty.bertybridgeexpo.service;
 +
 +import android.app.Notification;
@@ -264,7 +430,22 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/s
 +    private static final String EXTRA_TITLE = "title";
 +    private static final String EXTRA_TEXT = "text";
 +
++    private static final String PREFS_NAME = "tech.berty.bertybridgeexpo.background_service";
++    private static final String PREF_ENABLED = "enabled";
++
++    // The user can turn the background service off in the settings of the app
++    public static boolean isEnabled(Context context) {
++        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(PREF_ENABLED, true);
++    }
++
++    public static void setEnabled(Context context, boolean enabled) {
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(PREF_ENABLED, enabled).apply();
++    }
++
 +    public static void start(Context context, String title, String text) {
++        if (!isEnabled(context)) {
++            return;
++        }
 +        Intent intent = new Intent(context, BackgroundService.class);
 +        intent.putExtra(EXTRA_TITLE, title);
 +        intent.putExtra(EXTRA_TEXT, text);
@@ -318,7 +499,7 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/s
 +        return new NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID_SERVICE)
 +            .setContentTitle(title != null ? title : "Berty")
 +            .setContentText(text != null ? text : "Running in the background")
-+            .setSmallIcon(android.R.drawable.stat_notify_chat)
++            .setSmallIcon(NotificationHelper.getSmallIcon(this, NotificationHelper.ICON_SERVICE))
 +            .setCategory(Notification.CATEGORY_SERVICE)
 +            .setPriority(NotificationCompat.PRIORITY_LOW)
 +            .setOngoing(true)
@@ -333,9 +514,50 @@ diff -ruN a/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/s
 +        return null;
 +    }
 +}
+diff -ruN a/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx b/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx
+--- a/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx	2026-11-01 08:15:06.476248443 +0000
++++ b/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx	2026-11-01 08:15:06.472811941 +0000
+@@ -13,6 +13,7 @@
+ 	useThemeColor,
+ 	useMessengerClient,
+ 	useMountEffect,
++	useBluetoothEnablePrompt,
+ } from '@berty/hooks'
+ import {
+ 	resetChatInput,
+@@ -57,7 +58,11 @@
+ 		const isFake = !!(conversation as any)?.fake
+ 		const sendEnabled = !sending && !!(!isFake && message)
+ 
++		const askToEnableBluetooth = useBluetoothEnablePrompt()
++
+ 		const sendMessageBouncy = React.useCallback(async () => {
++			// offline (no Wi-Fi/mobile data) and Bluetooth off: offer to turn Bluetooth on
++			askToEnableBluetooth()
+ 			try {
+ 				if (!messengerClient) {
+ 					throw new Error('no messenger client')
+@@ -87,7 +92,16 @@
+ 				console.warn('e sending message:', e)
+ 				setSending(false)
+ 			}
+-		}, [convPK, playSound, dispatch, message, messengerClient, setSending, setMessage])
++		}, [
++			askToEnableBluetooth,
++			convPK,
++			playSound,
++			dispatch,
++			message,
++			messengerClient,
++			setSending,
++			setMessage,
++		])
+ 
+ 		const handlePressSend = React.useCallback(async () => {
+ 			if (sending) {
 diff -ruN a/berty-bridge-expo/mobile/src/contexts/notification.context.tsx b/berty-bridge-expo/mobile/src/contexts/notification.context.tsx
---- a/berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-10-31 10:39:40.354664052 +0000
-+++ b/berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-10-31 10:39:40.349760110 +0000
+--- a/berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-11-01 08:15:06.847794272 +0000
++++ b/berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-11-01 08:15:06.844823514 +0000
 @@ -8,7 +8,7 @@
  import beapi from "@berty/api";
  import { useNavigation } from "@berty/navigation";
@@ -360,17 +582,110 @@ diff -ruN a/berty-bridge-expo/mobile/src/contexts/notification.context.tsx b/ber
  					return;
  				}
  
+diff -ruN a/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts b/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts
+--- a/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-01 08:15:06.635389198 +0000
++++ b/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-01 08:15:06.632492908 +0000
+@@ -1,5 +1,11 @@
+ import * as Notifications from 'expo-notifications'
+-import { useEffect } from 'react'
++import { useCallback, useEffect } from 'react'
++import { Alert, AppState, Platform } from 'react-native'
++import { useTranslation } from 'react-i18next'
++import { GoBridge } from 'berty-bridge-expo'
++
++import beapi from '@berty/api'
++import { selectNodeNetworkConfig } from '@berty/redux/reducers/networkConfig.reducer'
+ 
+ import { useAppDispatch } from '@berty/hooks'
+ import { useNavigation } from '@berty/navigation'
+@@ -10,6 +16,7 @@
+ import { NotificationsInhibitor } from '@berty/utils/notification/notif-in-app'
+ import { Maybe } from '@berty/utils/type/maybe'
+ 
++import { useAppSelector } from './core.hooks'
+ import { useMountEffect } from './react.hooks'
+ 
+ export const useNotificationsInhibitor = (inhibitor: Maybe<NotificationsInhibitor>) => {
+@@ -63,8 +70,60 @@
+ 
+ 		dismiss()
+ 		const unsubscribeFocus = navigation.addListener('focus', dismiss)
++		// Coming back to the app from the recent apps (or from another app) does not focus the
++		// screen again, so also clear the notifications when the app becomes active on this chat.
++		const appStateSubscription = AppState.addEventListener('change', state => {
++			if (state === 'active' && navigation.isFocused()) {
++				dismiss()
++			}
++		})
+ 		return () => {
+ 			unsubscribeFocus()
++			appStateSubscription.remove()
+ 		}
+ 	}, [convPK, navigation])
+ }
++
++const BLUETOOTH_PROMPT_INTERVAL_MS = 2 * 60 * 1000
++let lastBluetoothPrompt = 0
++
++// Android: returns a function that offers to turn Bluetooth on (system dialog) when it is
++// useful, i.e. when Bluetooth is enabled in Berty's network settings, is turned off on the
++// phone and there is no Wi-Fi/mobile/ethernet network (so Bluetooth is the only way to reach
++// the contact). Meant to be called when the user adds a contact (QR) or sends a message.
++// It asks at most once every couple of minutes.
++export const useBluetoothEnablePrompt = () => {
++	const { t } = useTranslation()
++	const nodeNetworkConfig = useAppSelector(selectNodeNetworkConfig)
++	const bluetoothWanted =
++		nodeNetworkConfig?.bluetoothLe === beapi.account.NetworkConfig.Flag.Enabled
++
++	return useCallback(async () => {
++		if (
++			Platform.OS !== 'android' ||
++			!bluetoothWanted ||
++			Date.now() - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS
++		) {
++			return
++		}
++		try {
++			if ((await GoBridge.isBluetoothEnabled()) || (await GoBridge.hasNetworkConnection())) {
++				return
++			}
++			lastBluetoothPrompt = Date.now()
++			Alert.alert(t('notification.bluetooth-off.title'), t('notification.bluetooth-off.desc'), [
++				{ text: t('notification.bluetooth-off.not-now'), style: 'cancel' },
++				{
++					text: t('notification.bluetooth-off.confirm'),
++					onPress: () => {
++						GoBridge.requestEnableBluetooth().catch(err =>
++							console.warn('unable to request to enable bluetooth: ', err),
++						)
++					},
++				},
++			])
++		} catch (err) {
++			console.warn('bluetooth state check failed: ', err)
++		}
++	}, [bluetoothWanted, t])
++}
 diff -ruN a/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json b/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json
---- a/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-10-31 10:39:40.413487002 +0000
-+++ b/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-10-31 10:39:40.408958885 +0000
-@@ -540,6 +540,16 @@
+--- a/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-01 08:15:07.171635057 +0000
++++ b/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-01 08:15:07.168103096 +0000
+@@ -540,6 +540,24 @@
  		"need-restart": {
  			"title": "Restart required",
  			"desc": "Restart Berty to save your data and enable notifications!"
 +		},
 +		"background-service": {
 +			"title": "Berty is running in the background",
-+			"desc": "This keeps you connected so you can receive messages and notifications."
++			"desc": "Keeps Berty connected to receive messages. Touch and hold to hide this notification, or turn it off in Settings.",
++			"setting-title": "Run in the background",
++			"setting-desc": "Keep Berty running to receive messages and notifications when the app is closed"
++		},
++		"bluetooth-off": {
++			"title": "Turn on Bluetooth?",
++			"desc": "You have no Wi-Fi or mobile data. Turn on Bluetooth to reach nearby contacts without internet.",
++			"not-now": "Not now",
++			"confirm": "Turn on"
 +		},
 +		"quit": {
 +			"title": "Quit Berty?",
@@ -381,8 +696,8 @@ diff -ruN a/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json b/berty
  	},
  	"error": {
 diff -ruN a/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx b/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx
---- a/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-10-31 10:39:40.399814925 +0000
-+++ b/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-10-31 10:39:40.394821384 +0000
+--- a/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-11-01 08:15:07.017344309 +0000
++++ b/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-11-01 08:15:07.014111460 +0000
 @@ -2,8 +2,10 @@
  import pickBy from 'lodash/pickBy'
  import React, { useEffect, useMemo, useRef, useState } from 'react'
@@ -426,9 +741,98 @@ diff -ruN a/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx b/berty-brid
  	const scrollRef = useRef<ScrollView>(null)
  	const searching = !!searchText
  	const lowSearchText = searchText.toLowerCase()
+diff -ruN a/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx b/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx
+--- a/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-11-01 08:15:06.953969836 +0000
++++ b/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-11-01 08:15:06.950429473 +0000
+@@ -15,7 +15,7 @@
+ import { UnifiedText } from '@berty/components/shared-components/UnifiedText'
+ import { useAppDimensions } from '@berty/contexts/app-dimensions.context'
+ import { useStyles } from '@berty/contexts/styles'
+-import { useAccount, useMessengerClient, useThemeColor } from '@berty/hooks'
++import { useAccount, useBluetoothEnablePrompt, useMessengerClient, useThemeColor } from '@berty/hooks'
+ import { ScreenFC, useNavigation } from '@berty/navigation'
+ import { checkPermission } from '@berty/utils/permissions/checkPermissions'
+ import { PermissionType } from '@berty/utils/permissions/permissions'
+@@ -198,6 +198,14 @@
+ 	const { t } = useTranslation()
+ 	const account = useAccount()
+ 	const url = account.link
++	const askToEnableBluetooth = useBluetoothEnablePrompt()
++
++	// adding a contact with a QR code while offline: Bluetooth may be the only way to connect
++	useFocusEffect(
++		useCallback(() => {
++			askToEnableBluetooth()
++		}, [askToEnableBluetooth]),
++	)
+ 
+ 	useFocusEffect(
+ 		useCallback(() => {
+diff -ruN a/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx b/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx
+--- a/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-11-01 08:15:07.113998098 +0000
++++ b/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-11-01 08:15:07.110330351 +0000
+@@ -3,6 +3,7 @@
+ import { useTranslation } from 'react-i18next'
+ import { Platform, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native'
+ import { RESULTS } from 'react-native-permissions'
++import { GoBridge } from 'berty-bridge-expo'
+ import { useDispatch, useSelector } from 'react-redux'
+ 
+ import beapi from '@berty/api'
+@@ -167,6 +168,31 @@
+ 		f()
+ 	})
+ 
++	// Android: keep Berty running in the background (foreground service)
++	const [backgroundServiceEnabled, setBackgroundServiceEnabled] = React.useState(true)
++	React.useEffect(() => {
++		if (Platform.OS !== 'android') {
++			return
++		}
++		GoBridge.isBackgroundServiceEnabled()
++			.then(setBackgroundServiceEnabled)
++			.catch(err => console.warn('unable to get the background service setting: ', err))
++	}, [])
++	const onToggleBackgroundService = React.useCallback(async () => {
++		const enabled = !backgroundServiceEnabled
++		setBackgroundServiceEnabled(enabled)
++		try {
++			await GoBridge.setBackgroundServiceEnabled(
++				enabled,
++				t('notification.background-service.title'),
++				t('notification.background-service.desc'),
++			)
++		} catch (err) {
++			console.warn('unable to change the background service setting: ', err)
++			setBackgroundServiceEnabled(!enabled)
++		}
++	}, [backgroundServiceEnabled, t])
++
+ 	const getOffGridCommunicationValue = React.useCallback(() => {
+ 		if (
+ 			blePerm === 'granted' &&
+@@ -267,6 +293,18 @@
+ 								</MenuToggleWithIcon>
+ 								<DividerItem />
+ 							</>
++						)}
++						{Platform.OS === 'android' && (
++							<>
++								<MenuToggleWithIcon
++									iconName='smartphone-outline'
++									isToggleOn={backgroundServiceEnabled}
++									onPress={onToggleBackgroundService}
++								>
++									{t('notification.background-service.setting-title')}
++								</MenuToggleWithIcon>
++								<DividerItem />
++							</>
+ 						)}
+ 						{pushAvailable && (
+ 							<>
 diff -ruN a/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts b/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts
---- a/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-10-31 10:39:40.375894665 +0000
-+++ b/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-10-31 10:39:40.371980455 +0000
+--- a/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-11-01 08:15:06.900687444 +0000
++++ b/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-11-01 08:15:06.897115909 +0000
 @@ -1,5 +1,23 @@
 +import { Platform } from 'react-native'
  import { GoBridge } from 'berty-bridge-expo'
@@ -471,8 +875,8 @@ diff -ruN a/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts b/berty-bridge-e
  		} else {
  			console.error('unable to init bridge: ', err)
 diff -ruN a/berty-bridge-expo/mobile/src/utils/messenger/clients.ts b/berty-bridge-expo/mobile/src/utils/messenger/clients.ts
---- a/berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-10-31 10:39:40.387628367 +0000
-+++ b/berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-10-31 10:39:40.383586324 +0000
+--- a/berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-11-01 08:15:06.924210828 +0000
++++ b/berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-11-01 08:15:06.920895074 +0000
 @@ -3,7 +3,6 @@
  import { Platform } from 'react-native'
  
@@ -510,7 +914,7 @@ diff -ruN a/berty-bridge-expo/mobile/src/utils/messenger/clients.ts b/berty-brid
  	dispatch: AppDispatch,
 diff -ruN a/berty-bridge-expo/mobile/src/utils/notification/viewing.ts b/berty-bridge-expo/mobile/src/utils/notification/viewing.ts
 --- a/berty-bridge-expo/mobile/src/utils/notification/viewing.ts	1970-01-01 00:00:00.000000000 +0000
-+++ b/berty-bridge-expo/mobile/src/utils/notification/viewing.ts	2026-10-31 10:39:40.361986875 +0000
++++ b/berty-bridge-expo/mobile/src/utils/notification/viewing.ts	2026-11-01 08:15:06.862229818 +0000
 @@ -0,0 +1,29 @@
 +import { AppState } from 'react-native'
 +
@@ -542,8 +946,8 @@ diff -ruN a/berty-bridge-expo/mobile/src/utils/notification/viewing.ts b/berty-b
 +	)
 +}
 diff -ruN a/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift b/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift
---- a/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-10-31 10:39:40.423739191 +0000
-+++ b/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-10-31 10:39:40.421030592 +0000
+--- a/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-11-01 08:15:06.128722755 +0000
++++ b/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-11-01 08:15:06.128620713 +0000
 @@ -71,6 +71,7 @@
          os_log("successfully decrypt push", log: oslogger)
  
@@ -588,27 +992,64 @@ diff -ruN a/berty-bridge-expo/plugin/src/NotificationService/NotificationService
      }
  }
 diff -ruN a/berty-bridge-expo/plugin/src/index.ts b/berty-bridge-expo/plugin/src/index.ts
---- a/berty-bridge-expo/plugin/src/index.ts	2026-10-31 10:39:40.126081608 +0000
-+++ b/berty-bridge-expo/plugin/src/index.ts	2026-10-31 10:39:40.122358637 +0000
-@@ -9,6 +9,7 @@
+--- a/berty-bridge-expo/plugin/src/index.ts	2026-11-01 08:15:06.111144767 +0000
++++ b/berty-bridge-expo/plugin/src/index.ts	2026-11-01 08:15:06.107676106 +0000
+@@ -9,6 +9,8 @@
  import withIosTeamId from "./withIosTeamId";
  import withBridgingHeader from "./withBridgingHeader";
  import withBertyNotificationService from "./withAndroidNotificationService";
 +import withAndroidBackgroundService from "./withAndroidBackgroundService";
++import withAndroidNotificationIcons from "./withAndroidNotificationIcons";
  
  const withConfig: ConfigPlugin = (config) => {
  	return withPlugins(config, [
-@@ -20,6 +21,7 @@
+@@ -20,6 +22,8 @@
  		withAndroidMdnsPermissions,
  		withBlePermissions,
  		withBertyNotificationService,
 +		withAndroidBackgroundService,
++		withAndroidNotificationIcons,
  	]);
  };
  
+diff -ruN a/berty-bridge-expo/plugin/src/notificationIconsData.ts b/berty-bridge-expo/plugin/src/notificationIconsData.ts
+--- a/berty-bridge-expo/plugin/src/notificationIconsData.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/berty-bridge-expo/plugin/src/notificationIconsData.ts	2026-11-01 08:15:06.143714667 +0000
+@@ -0,0 +1,31 @@
++// Generated: monochrome (white on transparent) Android status bar icons derived from the Berty logo.
++// "message" is the Berty bird, "service" is the Berty bird inside a ring so that the ongoing
++// background service notification can be told apart from the message notifications.
++const icons = {
++	message: {
++		mdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAACSElEQVR42qWWPWsVURCGn917Ez8wCKJtxI/YCGkEwUKwsRAlbUCtUkQCwUbS2EgqsbAJiI2lnfgH7ATFBAWNIoIY/AALxUYLc829u4+Fs3Cy2XtNyMBhz9mz877vzpmZ3UxlgLWAgm1YXgPLa3sFcB44FfeyLTOo9dGKgTrvP/uottUsRp6sWzHPG7DWEVxQx5P1pQDvqKU6GSDDTUAx8iDdQHAswFbVBfWo+l4t1D+xt5Q4jqqz6iF1Qp1Wx5L9rE5wJcCKAPup9lxvpTqj3le7QTimLidvek/dlZJUBDfiobUG4JSgsmuJ2qUgrPweqSNVuKqsKZMsaQFNuVvEc3eA27Xsa8d8DTgLLMSzeUXQrYHV09EAKoG7kcKngRNAJ/EZCiGXgSNAUTE/aagLGkg7wK8gugl8i3UqpBdEJ4GVPBwXgdcx71e5AjuBkRByEZgB9iX7ObAjrscrxXmwziWhKRvUlxHruZh/Ab4noWsBT2P/MbCcVnJVhVf7ZE1lVRpfT3xeJHvjgyq5ag/T6tdwKAek63N1Tn0W83PhP5y0lA29qB3XxZriunXj+ls93FTBg95g8j/gRRSk6lRDg2wkyJJG9irC0GsA7ibrWwl41q8B1tXPhnMvCUWd6EecE/1adJ2gOpA96udQ33TAH0L1wc2Cq7Qjf3vAFDAa8yzqYx5YAd4C74DVLX9KQ/0B9VMcXhXnhw2K2ptVXj+DiVo4Hqh7A3Co6Uu12ZHFX8Vu4AywH3gJvElahNv5q8j6/LZkSQPblv0FSW6vupmotWYAAAAASUVORK5CYII=",
++		hdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAADz0lEQVR42r2YS4gdRRSGv9t9Z2ZhkEgEiS8SNRAzBCLZiZCFKG5cKGgQFBduVRB1MRLciKiQhRtBQUEEURAXPkAUZSQq6MKFiSQmRrIZgqCjBnGGmbn3fm5O66Hp++jMnRQcuruqq85fp6r+/3R3VFqWEugAg7Cplm6LdzthfbawFC3AGBF5HHgTOBD1xVQRqdlKtat2Ul0nbJv6qv+X91MfpmWjGssAUjmswKyp6+pf6o3xTlHrW6S6ovY8MaCuuqC+pO5M0SnUwwmMai+urzSAH+W4k94dCqiKwB1pOc6rz6rbo+24OlD70T4I+1u9umHZrlX3xv1N6kF1T0MUGwF14+FozHw1AftRfS6c10sVpSej/1Xq0+qHUX826r+M53/URfXRNIGiCVAVvu+iYz8A9JLzJkDVez+rR9Sl1Pa2emcCNKiNcUy9rulQZHRnk6PstOfkZU29rzbrxWjbiLHW4/mUen09UplDekN4qhzHHMBG2MPAe8BsWJ3LSmAmfO0FPgWuSe1TIbVBOPkAeDfYfz1slEJsBKgjMUZRB1Rsgu37wNG4H4TDnRPI1gB4ENgdYxR5SY6nGU9M9BHqFWApCe5TwEngLuDCGDnaBtxeTa6o1g74JDloW1YDSNV3B7AduHzEBE22/7+6dOyvUJdrBDiuDNLp2p10b4d6mzqnflHjrXq/XlADalEEwhL4E3gx5TqTZgH92NR3x1hdYBn4GlhrOKV5FWajvayrfTWzWfVE4o1JozRQf0u8MqvOxJiLKUJVlBbU/eoj6sdxRS3r2tIJBa9Icn1CUNUSf6VeWRtzMQCvxDtnklyNTT8qxrwhJKFNqUD9ot4b+VPWMtUL6qGon0nZQTEqH6q0ZZf6Tmy8QUtQqufUl9XP1F/VN9T5UUqv0hmS5M8Ekx4Avo3nogVzVwdlBbgF+B34IxHpoG2SXyXyLwBzLRP7Iunia8CZ9LXiuBPcFKEyOt0KHLsIWenFRE8BB+PoT6wAxQgWfSbabSEjGwFmCbg/GLydHA3Z0PfEBu1PyEOZhX9Q913sF0k9AS+C7k820H0GUCVuG7WU9nX1ss18HjVF56EhYIYd/dVg20PjEvhJrNrUWVu+B/bFupcN+jMAzgGngW+Aj4ATaU/aYt8NPfZVknUYmI/7MlFAGanp8wHsdNqw+XBs+udDR22KjonAqujMAz/VQBTT/gvSjdn3gMeAmyMXLhPbAjwRYLoJ5Jb/jtkXM55LdeeBBeCtGgNvWclLtgt4ANgTjj8PWx6nP9MGNMkfsz6XqHQbNmldZC8ZGIB/AV0K1RSxQ+U6AAAAAElFTkSuQmCC",
++		xhdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAFRElEQVR42tWZW6gVZRTHfzN7HzMDKaUMujxEkpQRCZ4HSzAUKopeIoLyyaCoMILSgugCPURR1MOxy7NJaUJoGuFDUHLsAhZElpnYBSoLzW7npOfsmX8PrS+W35m9Z2bv8WgLhr2Zme/71n3915pEEg1QAjSyUV1KG9pDTpBppfaAWk+A3N3T/8UCwWVy4HFgL/AxMN+epdMmgaS6VyIplXS2pBEdT8/ZO60+9u3rSgqCOPh00LIizQdXeR9YCnTcun3AMPDXdLlUkalz5x4CWo7x8PukMT9pcRRiaQFwu61LS1ywKJ4GcqFE0pCkdZJG7fcs93zIfpeYu2SScuc+mf3ukzTb9kvc+tRcKy1xi3aFd/67iHx2ReTT30h6UNJcJ+SbxnhHUyncW+WYaUWCIGmWO3OGpNPtHpHASV0BRkyTxyIGv5N0naRLJU1Emo8FyCVtKwjmhZJWSnpd0reS7rX7L0k6YJbbaQq7LBKkVIDEDhuNNJlFguztwbx3pUlJVzmrvm33PN1vz7cW7DEhaYOkeWVZzUt4sWleBUxmqk7h3R2mbU9jkp6RtFTSTDt3o62ZKFDYDxZzwR17CrDALcxLmFNNgTJJ45JuKHCNTZHVw/nBYoedEFPcKa0JA+pUWLkaMQ7cAmwHhqLU3C3NtoEMmAO8BSyx1J42DeZ6MZHadY9jftIYq0ItY3oOsBW4MK4xsQWarJyZ7b8beM2Y6TjBWhWLV2rr5gKrHUqYIkCLZuFwQKpPO1eSq/ITMTMVLLEKuMAp5zgsfwT4qSEME8ycAJ9F8GEhsAXYAMw2QaooA3OlG/291B120B3WlCsdAo5G1l4O3ATcBlzknpdRwGZXFgVxAFNb7MWmXCl1ZwSlHHbPx2okkmDRS4DTwn5pJN1Gc6Wmetw5wAzbL2SezcD1wDLga2BWiSvmUawsAs4IivbaaRnzrxa0iv0GsIDFEQNHgXeA90r6aLmMFRTQccE/JQsFhh8BvrJneQMutBaYGTHbMstQwvwh4HPgF9d3ZC4dT6kDqfnlU106srrMZ8DlwBP2f8hpM+vBvIA/gRXAFRa4K4H1wMP27F/+CgBSQH4PRRC5H8oNB/0t6VaHfNvWICUFWGjCfl+uA6erCNEZQAgZOHusAFVusncmHIA7aOg4dY1Nq6ijK2vtvBCDkLfgLkl3SppvVtgYvbtf0qIq2i8TwG9ws3VL+YDu1Il6gzckrTfNj1o3dmZV5ruNVWIKCPIB4FkLvtYAmSm3qw38ajBZVhPkEkClDNiukM87wHmWDpuA4H79p8B+U0riQFvez2a9Brd3AOe4gwYFeiFNrrY923Yvq5u20wrVdB5wd4VhVVXqmKYfBb50fULjw92g/buAcxsAebJYGgJeBNYZ89lg9uydfc6X9KNrzPsln31GXEFLNOBwt0yAzQUM1J1IhLXjku5rkvluAgTmh21OlNXM/SHfe4vtlLS8zsiw6tUrja4xxJh1iRUP9BRNskOd+B54AXjepe0ODVJcyEJQDQOjfTb6fwAfAK8A7wK/1y1Og3wjk9N+u0vVDVj9N+Bns9Juq6QfGn4/UKCUxpmPLRCq4GJgpwkQf3gIrnIMuAb4xAQY69K/5if6K027gLm1PXw/VM3NwEfG5KRr3v3cZ1ooWCD457U2wmsXMN+x+0fs89IXbt1J+chdFANrCqqj3LD1iA2W9riW8aRSWjDCa1m5T90MMwV2mN/vOlEZZRAXCoF6tU3MljkovR3YZhlmshH8cgLrQPwlvshiOacQtbukvyxyK+o2GqeCBep8uTlp9A8oRhzGLEUrDQAAAABJRU5ErkJggg==",
++		xxhdpi:
++			"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",
++		xxxhdpi:
++			"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",
++	},
++	service: {
++		mdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAACq0lEQVR42r2WvYtXRxSGn9/dD5VFND8UQTsVLBQM6UxcwSYigiCooCLBQiQQ0PwDIRBioV1aCxUVAyGNFoIoLmsjKn6ABNIIFlFREYludnXdfdK8o+PNTZFAMjCce8+c896ZM/O+c3sqHa2XPlv5+sCiPD8DnldjDWD6B22wA3wAmEnwWmAP8DmwCpibmCngV+AicAa428p939S6D8QuVU/7vr1Ux9WT6ePxlXY6OTUGKl3go+rDJF5Wt6gftSaCOj9jlxP7MLkffKQEN7Gfqa/UWfXLDtDBJDct/wF1Rp0IxjvM8tCoS9Tf1Gl1XYLmxB5St+Z5uMoZTkfdoL4JxpISUy/nbJb6hbqgmsnu+G92rIjWRPYn9mwpVQlYk4GreT+W92Pq/axqNjXfp36fFf2s7kjOUOxYctfUe3A0zs1Z2rh/bW9Tgrvqsqy0tG+D01M3xXe0/sA99Xd1JO9XMuPXsaW/UZerC7Mv0+pUANcndyRY91SaMHQlcAuYCD2uVWzuVex+AdwHtgGrQ6xC1l2xE8FaCfSb0H8O8KCi/Q8BG4pcFNnoAxuB48BY/I+A85GOMpkHwVzUdEjFYJJ2Ak8K4SspOAGsAxYAr4GDwFbgm4zTlop+6jhWEaSciK9S3+nY2Wpjv1NXtJjbVCdpSu23N3leFTis3q42dzonSfVGpKIG78XOa28ywAVgPjBa1XsX8HHGh1K6AeDHqOvLlnoOJHc0WBdqNS1EG6s055fM+JV6Tj2sflqxt9ehU51Ea0vFdnVvVeuvW0BNB/jw30lFTy1lWgzcBkaAU8AkcB34KSUqN9ZMxYuSOwNsAC4BT4FPYjvl+g/1RaUxdcxg+j+S664L53G1J1uqE/OvL5z/5cqkI2CtekS9o05WgJPxHUlMVy4qvf/6t+VPpM1JsQeM8nkAAAAASUVORK5CYII=",
++		hdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAENklEQVR42s2YT2hdRRTGv/vyXktamjRQY6nRIpYSxFS6sVTBPwsXCi4UXLqVaqpENyIuqhurzU43ARcFxa1UiJSiWdRNFAoKSaEg1dhEGruo9U9i0+S9n5tv4mG89+YFRDNwmbkzZ77zzZkz95y5BaAuSyGpR9KaNleaktqSulJUdEmox6CpDEs6ImlE0p2S+tz/m6R5STOSvpZ0qQajvAB1TwMo3N4NHAe+Am6xcbll2eOeK2M16nTWkekJIKPAXInSP4ErwEU/V9yXlzljFBl214TShP3AVAb+EzABPA0cAHZaUeH2AY9NWDaWKWNWkqoj8xCwEMCuAmPAng22OT57POdqwFkwdimpKjJHgaUAcgbYF+RawReKUCcf6QGaQX6fMVJZso5/kCpz4CFgEeh48niQaQaAJrA9ECmzUJERO2XMjnUM5Y6eW6cBnA8rGa+wyt3AN8CnYTHK2o2snRYyHvDPZ2PKt+pYEJ50305gV+YX34Wjfcig22o+HY3MWpNBz7HIIe59n52vDVwD9lrwAx/nFw34roGWXX+UEbgX6AWGvSVlxG6zjrZ19iUeCqxHA+tX3DfgvU7lgoE6BgP4HTgMvApcAr7wll732BngvkAq6RsLuKPJL6OFLljRzyZSeLVY+WrNVzlZ64QVDgK/hvHrwINhawqg37o61r1uIQEHQziYCGYeDqDJKp2MTCL6Tpg3ANyw7EogdZcVtyw3EXzxIKCGQ9pRSS23zzqyS9JqFhAbYUyO4E1JS5Le9/ghSXc4KyiMuyppQNLLnpNwzhqnZQ7rhEZcrzhSp0lzki76vVMTo39xpO9I+ljSs5JuZMRXJT1s3DX3zVjnOodEaL/ra5IWs3ThtFdTR6hfUq/nPCnpQ1skkdlmKxyWtDtYfdE61zkkQjGfWXY7mXxC0qwB10qStrakXZLG3J43TmH5hqTXJb1p6/0Rtn3Zsn9zsHOds3PNZp/99KW9B7gcThwlzt4GXrJ8L3DT459UhJTUnrXcuejUkeWOYIGOV3hZ0uOSPi/ZvsIyDUnvOVN8TdK0pJOSnrPjt8KOpLIj2x01/fKj60FJeyV9b0XJmVvuS8Sq/GlF0gOSFiQ9tkF+jnUNRg6J8Yzr7fb2Ioz1+ISMSHo+nMC8rHr+vKQXwpEvSmTTsR/xnHUOCXjagJL0RMUN4S3Ld8LpaYcj3JL0g6SnfHIKY1bdIrCutJjp5NRloaM/+6I+Ehy6UxI62sBp4PaSdKTMoWtDR1lwHXNfSimmsjBx01H6S+Bt4P6SfKjq6Tq4VqUfj7pvJRzvI1mOlF+ZNrpW1aYfVQnaZ+77NtueN0pS1EYXCX/XCVpdCnsKOOk8ZxJ4Jkshur19bDqFrUvyT1TcTLRJq2w6yd/oGjRUcvtoBB/8169BW/KiuCWv0lvyZ8P/9jtmy/2w6pbQf/ZL7y/FEL44rmodHAAAAABJRU5ErkJggg==",
++		xhdpi:
++			"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",
++		xxhdpi:
++			"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",
++		xxxhdpi:
++			"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",
++	},
++} as const;
++
++export default icons;
 diff -ruN a/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts b/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts
 --- a/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts	1970-01-01 00:00:00.000000000 +0000
-+++ b/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts	2026-10-31 10:39:40.110487393 +0000
++++ b/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts	2026-11-01 08:15:06.100476399 +0000
 @@ -0,0 +1,45 @@
 +import {
 +	AndroidConfig,
@@ -655,33 +1096,88 @@ diff -ruN a/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts b/berty
 +};
 +
 +export default withAndroidBackgroundService;
+diff -ruN a/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts b/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts
+--- a/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts	2026-11-01 08:15:06.118820444 +0000
+@@ -0,0 +1,41 @@
++import { type ConfigPlugin, withDangerousMod } from "@expo/config-plugins";
++import * as fs from "fs";
++import * as path from "path";
++
++import icons from "./notificationIconsData";
++
++// Writes the status bar icons used by the native notifications (messages and
++// background service) in the generated android/app/src/main/res/drawable-*dpi folders.
++const FILES = {
++	message: "ic_stat_berty.png",
++	service: "ic_stat_berty_service.png",
++} as const;
++
++const withAndroidNotificationIcons: ConfigPlugin = (config) =>
++	withDangerousMod(config, [
++		"android",
++		async (config) => {
++			const resDir = path.join(
++				config.modRequest.platformProjectRoot,
++				"app",
++				"src",
++				"main",
++				"res"
++			);
++
++			for (const kind of Object.keys(FILES) as (keyof typeof FILES)[]) {
++				for (const [density, base64] of Object.entries(icons[kind])) {
++					const dir = path.join(resDir, `drawable-${density}`);
++					fs.mkdirSync(dir, { recursive: true });
++					fs.writeFileSync(
++						path.join(dir, FILES[kind]),
++						Buffer.from(base64, "base64")
++					);
++				}
++			}
++
++			return config;
++		},
++	]);
++
++export default withAndroidNotificationIcons;
 diff -ruN a/berty-bridge-expo/src/BertyBridgeExpoModule.ts b/berty-bridge-expo/src/BertyBridgeExpoModule.ts
---- a/berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-10-31 10:39:40.090487392 +0000
-+++ b/berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-10-31 10:39:39.890487380 +0000
-@@ -23,6 +23,9 @@
+--- a/berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-11-01 08:15:06.071469665 +0000
++++ b/berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-11-01 08:15:06.068072153 +0000
+@@ -23,6 +23,14 @@
  	invokeBridgeMethod(method: string, b64message: string): Promise<string>;
  	connectService(serviceName: string, address: string): Promise<void>;
  	requestPushToken(): Promise<string>;
 +	startBackgroundService(title: string, text: string): Promise<void>;
 +	stopBackgroundService(): Promise<void>;
++	isBackgroundServiceEnabled(): Promise<boolean>;
++	setBackgroundServiceEnabled(enabled: boolean, title: string, text: string): Promise<void>;
 +	quitApp(): Promise<void>;
++	isBluetoothEnabled(): Promise<boolean>;
++	hasNetworkConnection(): Promise<boolean>;
++	requestEnableBluetooth(): Promise<boolean>;
  }
  
  // This call loads the native module object from the JSI.
 diff -ruN a/berty-bridge-expo/src/GoBridge.ts b/berty-bridge-expo/src/GoBridge.ts
---- a/berty-bridge-expo/src/GoBridge.ts	2026-10-31 10:39:40.103936146 +0000
-+++ b/berty-bridge-expo/src/GoBridge.ts	2026-10-31 10:39:40.099612755 +0000
-@@ -21,6 +21,9 @@
+--- a/berty-bridge-expo/src/GoBridge.ts	2026-11-01 08:15:06.084584354 +0000
++++ b/berty-bridge-expo/src/GoBridge.ts	2026-11-01 08:15:06.081099945 +0000
+@@ -21,6 +21,14 @@
  	invokeBridgeMethod(method: string, b64message: string): Promise<string>;
  	connectService(serviceName: string, address: string): Promise<void>;
  	requestPushToken(): Promise<string>;
 +	startBackgroundService(title: string, text: string): Promise<void>;
 +	stopBackgroundService(): Promise<void>;
++	isBackgroundServiceEnabled(): Promise<boolean>;
++	setBackgroundServiceEnabled(enabled: boolean, title: string, text: string): Promise<void>;
 +	quitApp(): Promise<void>;
++	isBluetoothEnabled(): Promise<boolean>;
++	hasNetworkConnection(): Promise<boolean>;
++	requestEnableBluetooth(): Promise<boolean>;
  }
  
  class GoBridge implements GoBridgeInterface {
-@@ -55,6 +58,18 @@
+@@ -55,6 +63,38 @@
  	requestPushToken(): Promise<string> {
  		return BertyBridgeExpoModule.requestPushToken();
  	}
@@ -694,9 +1190,59 @@ diff -ruN a/berty-bridge-expo/src/GoBridge.ts b/berty-bridge-expo/src/GoBridge.t
 +		return BertyBridgeExpoModule.stopBackgroundService();
 +	}
 +
++	isBackgroundServiceEnabled(): Promise<boolean> {
++		return BertyBridgeExpoModule.isBackgroundServiceEnabled();
++	}
++
++	setBackgroundServiceEnabled(enabled: boolean, title: string, text: string): Promise<void> {
++		return BertyBridgeExpoModule.setBackgroundServiceEnabled(enabled, title, text);
++	}
++
 +	quitApp(): Promise<void> {
 +		return BertyBridgeExpoModule.quitApp();
++	}
++
++	hasNetworkConnection(): Promise<boolean> {
++		return BertyBridgeExpoModule.hasNetworkConnection();
++	}
++
++	isBluetoothEnabled(): Promise<boolean> {
++		return BertyBridgeExpoModule.isBluetoothEnabled();
++	}
++
++	requestEnableBluetooth(): Promise<boolean> {
++		return BertyBridgeExpoModule.requestEnableBluetooth();
 +	}
  }
  
  const goBridge: GoBridgeInterface = new GoBridge();
+diff -ruN a/go/internal/messengerpayloads/handlers.go b/go/internal/messengerpayloads/handlers.go
+--- a/go/internal/messengerpayloads/handlers.go	2026-11-01 08:15:05.892763729 +0000
++++ b/go/internal/messengerpayloads/handlers.go	2026-11-01 08:15:05.888753751 +0000
+@@ -500,11 +500,13 @@
+ 	)
+ 
+ 	// update db
++	alreadyReceived := false
+ 	if err := h.db.TX(h.ctx, func(tx *messengerdb.DBWrapper) error {
+ 		var err error
+ 
+ 		contact, err = tx.AddContactRequestIncomingReceived(contactPK, m.GetDisplayName(), groupPKBytes)
+ 		if errors.Is(err, errcode.ErrCode_ErrDBEntryAlreadyExists) {
++			alreadyReceived = true
+ 			return nil
+ 		} else if err != nil {
+ 			return errcode.ErrCode_ErrDBAddContactRequestIncomingReceived.Wrap(err)
+@@ -524,6 +526,12 @@
+ 		return err
+ 	}
+ 
++	// The metadata events are processed again each time the node starts: if this request has
++	// already been handled (and so already notified), do not notify the user a second time.
++	if alreadyReceived {
++		return nil
++	}
++
+ 	if err := h.dispatcher.StreamEvent(mt.StreamEvent_TypeContactUpdated, &mt.StreamEvent_ContactUpdated{Contact: contact}, true); err != nil {
+ 		return err
+ 	}

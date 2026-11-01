@@ -184,13 +184,20 @@ public class Scanner extends ScanCallback {
         mLogger.i(TAG, "stop scanning");
         if (mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
             mBluetoothLeScanner.stopScan(this);
-            setScannerState(SCANNER_STATE_DISABLED);
         } else {
             mLogger.e(TAG, "stop scanner error: BT adapter not running");
         }
-        mTask.cancel();
-        mTimer.purge();
-        mTimer = null;
+        // always reset the state, even if Bluetooth is off (otherwise the scanner stays "enabled")
+        setScannerState(SCANNER_STATE_DISABLED);
+        if (mTask != null) {
+            mTask.cancel();
+        }
+        if (mTimer != null) {
+            mTimer.cancel(); // also ends the timer thread
+            mTimer.purge();
+            mTimer = null;
+        }
+        foundMap.clear();
     }
 
     // Return the status of the scanner

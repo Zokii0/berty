@@ -3,6 +3,8 @@ import { createSlice, PayloadAction } from '@reduxjs/toolkit'
 import darkTheme from '@berty/assets/themes/dark-theme.json'
 import darkLFTheme from '@berty/assets/themes/DarkLF-theme.json'
 import defaultTheme from '@berty/assets/themes/default-theme.json'
+import blackTheme from '@berty/assets/themes/black-theme.json'
+import nightTheme from '@berty/assets/themes/night-theme.json'
 import pinkTheme from '@berty/assets/themes/pink-theme.json'
 import { randomizeThemeColor } from '@berty/contexts/styles'
 
@@ -41,10 +43,22 @@ type ThemeDefinition = { colors: ThemeType }
 
 type ThemeCollectionType = Partial<Record<AVAILABLE_THEMES | string, ThemeDefinition>>
 
+// How the app picks its colors:
+// - system: follows the dark/light setting of the phone
+// - light: the regular Berty theme (or the theme picked in the theme editor)
+// - dark: dark theme, not fully black
+// - black: pure black background (saves battery on AMOLED screens)
+export type ThemeMode = 'system' | 'light' | 'dark' | 'black'
+
+export const nightThemeColors: ThemeType = nightTheme
+export const blackThemeColors: ThemeType = blackTheme
+
 type ThemeState = {
 	selected: keyof AVAILABLE_THEMES | string
 	collection: ThemeCollectionType
 	isDark: boolean
+	// undefined for the users who had the app before this setting existed
+	mode?: ThemeMode
 }
 
 const makeRoot = <T>(val: T) => ({
@@ -82,6 +96,8 @@ export const selectThemeCollection = (state: LocalRootState): ThemeCollectionTyp
 
 export const selectThemeIsDark = (state: LocalRootState): boolean => selectSlice(state).isDark
 
+export const selectThemeMode = (state: LocalRootState): ThemeMode => selectSlice(state).mode ?? 'light'
+
 export const selectCurrentTheme = (state: LocalRootState): string =>
 	selectSlice(state).isDark
 		? AVAILABLE_THEMES.DEFAULT_DARK_THEME
@@ -105,6 +121,9 @@ const slice = createSlice({
 	name: sliceName,
 	initialState,
 	reducers: {
+		setThemeMode(theme: ThemeState, { payload: { mode } }: PayloadAction<{ mode: ThemeMode }>) {
+			theme.mode = mode
+		},
 		toggleDarkTheme(theme: ThemeState) {
 			theme.isDark = !theme.isDark
 		},
@@ -152,7 +171,14 @@ const slice = createSlice({
 	},
 })
 
-export const { setTheme, randomizeTheme, saveTheme, importTheme, deleteAddedThemes, resetTheme } =
-	slice.actions
+export const {
+	setTheme,
+	setThemeMode,
+	randomizeTheme,
+	saveTheme,
+	importTheme,
+	deleteAddedThemes,
+	resetTheme,
+} = slice.actions
 
 export default makeRoot(slice.reducer)

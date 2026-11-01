@@ -297,17 +297,18 @@ public class BleDriver {
         if (mScanner != null) {
             mScanner.stop();
         }
-        mDeviceManager.closeAllDeviceConnections();
-        if (mGattServer != null) {
-            mGattServer.stop();
-        }
         // Tell the Go side that every peer is gone: the connections are dead, and
         // without this the stale peers make it believe it is still connected.
         mPeerManager.unregisterAllPeers();
+        // Do not wait for disconnection callbacks: they never come if Bluetooth is going off
+        mDeviceManager.clearAll();
+        if (mGattServer != null) {
+            mGattServer.stop();
+        }
         setStarted(false);
 
         if (mHandshakeLooper != null) mHandshakeLooper.quit();
-        if (mCallbacksLooper != null) mCallbacksLooper.quit();
+        if (mCallbacksLooper != null) mCallbacksLooper.quitSafely(); // let pending HandleLostPeer calls run
         if (mWriteLooper != null) mWriteLooper.quit();
         if (mReadLooper != null) mReadLooper.quit();
 

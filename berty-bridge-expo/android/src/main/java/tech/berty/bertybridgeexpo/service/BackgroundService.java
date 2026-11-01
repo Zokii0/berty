@@ -31,7 +31,22 @@ public class BackgroundService extends Service {
     private static final String EXTRA_TITLE = "title";
     private static final String EXTRA_TEXT = "text";
 
+    private static final String PREFS_NAME = "tech.berty.bertybridgeexpo.background_service";
+    private static final String PREF_ENABLED = "enabled";
+
+    // The user can turn the background service off in the settings of the app
+    public static boolean isEnabled(Context context) {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(PREF_ENABLED, true);
+    }
+
+    public static void setEnabled(Context context, boolean enabled) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(PREF_ENABLED, enabled).apply();
+    }
+
     public static void start(Context context, String title, String text) {
+        if (!isEnabled(context)) {
+            return;
+        }
         Intent intent = new Intent(context, BackgroundService.class);
         intent.putExtra(EXTRA_TITLE, title);
         intent.putExtra(EXTRA_TEXT, text);
@@ -85,7 +100,7 @@ public class BackgroundService extends Service {
         return new NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID_SERVICE)
             .setContentTitle(title != null ? title : "Berty")
             .setContentText(text != null ? text : "Running in the background")
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(NotificationHelper.getSmallIcon(this, NotificationHelper.ICON_SERVICE))
             .setCategory(Notification.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)

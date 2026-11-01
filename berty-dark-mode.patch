@@ -1,0 +1,1357 @@
+diff -ruN a/berty-bridge-expo/mobile/App.tsx b/berty-bridge-expo/mobile/App.tsx
+--- a/berty-bridge-expo/mobile/App.tsx	2026-11-01 16:11:58.333768763 +0000
++++ b/berty-bridge-expo/mobile/App.tsx	2026-11-01 16:11:58.330766416 +0000
+@@ -1,4 +1,4 @@
+-import { NavigationContainer } from "@react-navigation/native";
++import { DefaultTheme, NavigationContainer } from "@react-navigation/native";
+ import React from "react";
+ import { View } from "react-native";
+ 
+@@ -7,7 +7,7 @@
+ import NotificationProvider from "@berty/contexts/notification.context";
+ import { PermissionsProvider } from "@berty/contexts/permissions.context";
+ import { UIKittenProvider } from "@berty/contexts/uiKitten.context";
+-import { useMountEffect, useThemeColor } from "@berty/hooks";
++import { useIsDarkTheme, useMountEffect, useThemeColor } from "@berty/hooks";
+ import { isReadyRef, navigationRef } from "@berty/navigation";
+ import { Navigation } from "@berty/navigation/stacks";
+ import { initI18N } from "@berty/i18n";
+@@ -28,6 +28,38 @@
+ 	);
+ };
+ 
++// Navigation colors (screen backgrounds, transitions) follow the theme
++const ThemedNavigationContainer = ({ children }: BackgroundProps) => {
++	const colors = useThemeColor();
++	const isDark = useIsDarkTheme();
++	const navigationTheme = React.useMemo(
++		() => ({
++			...DefaultTheme,
++			dark: isDark,
++			colors: {
++				...DefaultTheme.colors,
++				background: colors["main-background"],
++				card: colors["main-background"],
++				text: colors["main-text"],
++				border: colors["secondary-background"] ?? colors["main-background"],
++			},
++		}),
++		[colors, isDark]
++	);
++
++	return (
++		<NavigationContainer
++			ref={navigationRef}
++			theme={navigationTheme}
++			onReady={() => {
++				isReadyRef.current = true;
++			}}
++		>
++			{children}
++		</NavigationContainer>
++	);
++};
++
+ const App: React.FC = () => {
+ 	useMountEffect(() => {
+ 		return () => {
+@@ -40,18 +72,13 @@
+ 			<UIKittenProvider>
+ 				<Background>
+ 					<ErrorScreen>
+-						<NavigationContainer
+-							ref={navigationRef}
+-							onReady={() => {
+-								isReadyRef.current = true;
+-							}}
+-						>
++						<ThemedNavigationContainer>
+ 							<PermissionsProvider>
+ 								<NotificationProvider>
+ 									<Navigation />
+ 								</NotificationProvider>
+ 							</PermissionsProvider>
+-						</NavigationContainer>
++						</ThemedNavigationContainer>
+ 					</ErrorScreen>
+ 				</Background>
+ 			</UIKittenProvider>
+diff -ruN a/berty-bridge-expo/mobile/src/assets/themes/black-theme.json b/berty-bridge-expo/mobile/src/assets/themes/black-theme.json
+--- a/berty-bridge-expo/mobile/src/assets/themes/black-theme.json	1970-01-01 00:00:00.000000000 +0000
++++ b/berty-bridge-expo/mobile/src/assets/themes/black-theme.json	2026-11-01 16:11:57.895625580 +0000
+@@ -0,0 +1,15 @@
++{
++	"main-text": "#F2F2F7",
++	"main-background": "#000000",
++	"secondary-background": "#0C0C10",
++	"secondary-text": "#9C9EB8",
++	"background-header": "#23268A",
++	"secondary-background-header": "#B7305A",
++	"alt-secondary-background-header": "#15162E",
++	"reverted-main-text": "#FFFFFF",
++	"positive-asset": "#20235C",
++	"negative-asset": "#7D7F9E",
++	"warning-asset": "#FF5C8D",
++	"input-background": "#17171F",
++	"shadow": "#000000"
++}
+diff -ruN a/berty-bridge-expo/mobile/src/assets/themes/night-theme.json b/berty-bridge-expo/mobile/src/assets/themes/night-theme.json
+--- a/berty-bridge-expo/mobile/src/assets/themes/night-theme.json	1970-01-01 00:00:00.000000000 +0000
++++ b/berty-bridge-expo/mobile/src/assets/themes/night-theme.json	2026-11-01 16:11:57.888130648 +0000
+@@ -0,0 +1,15 @@
++{
++	"main-text": "#ECEDF7",
++	"main-background": "#262842",
++	"secondary-background": "#181927",
++	"secondary-text": "#A9ABC6",
++	"background-header": "#4046B8",
++	"secondary-background-header": "#D93A6B",
++	"alt-secondary-background-header": "#30335A",
++	"reverted-main-text": "#FFFFFF",
++	"positive-asset": "#3A3E80",
++	"negative-asset": "#8D8FB5",
++	"warning-asset": "#FF5C8D",
++	"input-background": "#31344F",
++	"shadow": "#000000"
++}
+diff -ruN a/berty-bridge-expo/mobile/src/components/LoaderDots.tsx b/berty-bridge-expo/mobile/src/components/LoaderDots.tsx
+--- a/berty-bridge-expo/mobile/src/components/LoaderDots.tsx	2026-11-01 16:11:57.509082412 +0000
++++ b/berty-bridge-expo/mobile/src/components/LoaderDots.tsx	2026-11-01 16:11:57.505086461 +0000
+@@ -2,10 +2,11 @@
+ import { View, Image, StatusBar } from 'react-native'
+ 
+ import source from '@berty/assets/images/loader_dots.gif'
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ 
+ export const LoaderDots: React.FC = () => {
+ 	const colors = useThemeColor()
++	const isDark = useIsDarkTheme()
+ 
+ 	return (
+ 		<View
+@@ -17,7 +18,7 @@
+ 				backgroundColor: colors['main-background'],
+ 			}}
+ 		>
+-			<StatusBar backgroundColor={colors['main-background']} barStyle='dark-content' />
++			<StatusBar backgroundColor={colors['main-background']} barStyle={isDark ? 'light-content' : 'dark-content'} />
+ 			<Image
+ 				source={source}
+ 				style={{ width: '80%', height: '40%', maxWidth: 170, maxHeight: 80 }}
+diff -ruN a/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx b/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx
+--- a/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx	2026-11-01 16:11:57.646425311 +0000
++++ b/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx	2026-11-01 16:11:57.643468030 +0000
+@@ -1,9 +1,15 @@
+ import React from 'react'
+ import { StatusBar } from 'react-native'
+ 
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ 
+ export const StatusBarPrimary: React.FC = () => {
+ 	const colors = useThemeColor()
+-	return <StatusBar backgroundColor={colors['main-background']} barStyle='dark-content' />
++	const isDark = useIsDarkTheme()
++	return (
++		<StatusBar
++			backgroundColor={colors['main-background']}
++			barStyle={isDark ? 'light-content' : 'dark-content'}
++		/>
++	)
+ }
+diff -ruN a/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx b/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx
+--- a/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx	2026-11-01 16:11:57.371342288 +0000
++++ b/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx	2026-11-01 16:11:57.368128686 +0000
+@@ -3,16 +3,19 @@
+ 
+ import beapi from '@berty/api'
+ import { MemberAvatar } from '@berty/components/avatars'
++import { useThemeColor } from '@berty/hooks'
+ 
+ import { MemberBarItem } from './interfaces'
+ 
+ export const AvatarWrapper: React.FC<{ member: MemberBarItem; convId: string; index: number }> =
+ 	props => {
++		const colors = useThemeColor()
+ 		return (
+ 			<View
+ 				style={[
+ 					styles.avatarWrapper,
+ 					{
++						borderColor: colors['main-background'],
+ 						zIndex: props.index,
+ 						opacity:
+ 							props.member.alreadyConnected &&
+@@ -37,7 +40,6 @@
+ 		width: 32,
+ 		height: 32,
+ 		borderRadius: 32,
+-		borderColor: 'white',
+ 		borderWidth: 1.5,
+ 		justifyContent: 'center',
+ 		alignItems: 'center',
+diff -ruN a/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx b/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx
+--- a/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx	2026-11-01 16:11:57.380192307 +0000
++++ b/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx	2026-11-01 16:11:57.377154425 +0000
+@@ -2,6 +2,7 @@
+ import { StyleSheet, View } from 'react-native'
+ 
+ import { UnifiedText } from '@berty/components/shared-components/UnifiedText'
++import { useThemeColor } from '@berty/hooks'
+ 
+ import { AvatarWrapper } from './AvatarWrapper'
+ import { MemberBarItem } from './interfaces'
+@@ -16,6 +17,7 @@
+ }
+ 
+ export const Avatars: React.FC<AvatarsProps> = props => {
++	const colors = useThemeColor()
+ 	return (
+ 		<View style={styles.container}>
+ 			<View style={styles.placeholder} />
+@@ -28,7 +30,7 @@
+ 				/>
+ 			))}
+ 			{props.membersLength > MAX_MEMBERS_TO_SHOW && (
+-				<View style={styles.manyMembersWrapper}>
++				<View style={[styles.manyMembersWrapper, { backgroundColor: colors['secondary-background'] }]}>
+ 					<UnifiedText style={styles.manyMembersText}>
+ 						+{props.membersLength - MAX_MEMBERS_TO_SHOW}
+ 					</UnifiedText>
+@@ -51,7 +53,6 @@
+ 		width: WIDTH_AVATAR_WRAPPER,
+ 		height: 30,
+ 		borderRadius: 30,
+-		backgroundColor: '#EDF1F7',
+ 		justifyContent: 'center',
+ 		alignItems: 'center',
+ 		marginLeft: -10,
+diff -ruN a/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx b/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx
+--- a/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx	2026-11-01 16:11:57.389507744 +0000
++++ b/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx	2026-11-01 16:11:57.386182146 +0000
+@@ -7,6 +7,7 @@
+ 	useAppSelector,
+ 	useConversationMembers,
+ 	useMessengerClient,
++	useThemeColor,
+ } from '@berty/hooks'
+ import { useNavigation } from '@berty/navigation'
+ import {
+@@ -26,6 +27,7 @@
+ 
+ export const MemberBar: React.FC<MemberBarProps> = props => {
+ 	const navigation = useNavigation()
++	const colors = useThemeColor()
+ 	const messengerClient = useMessengerClient()
+ 	const dispatch = useAppDispatch()
+ 	const peers = useAppSelector(selectPeerNetworkStatusDict)
+@@ -94,7 +96,7 @@
+ 	return (
+ 		<TouchableOpacity
+ 			onPress={() => navigation.navigate('Chat.MultiMemberSettings', { convId: props.convId })}
+-			style={styles.container}
++			style={[styles.container, { backgroundColor: colors['main-background'] }]}
+ 		>
+ 			<View style={styles.barWidth}>
+ 				{isOneConnected && memberList !== undefined ? (
+@@ -111,7 +113,6 @@
+ const styles = StyleSheet.create({
+ 	container: {
+ 		marginTop: 10,
+-		backgroundColor: 'white',
+ 		borderRadius: 18,
+ 		shadowOffset: {
+ 			width: 0,
+diff -ruN a/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx b/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx
+--- a/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx	2026-11-01 16:11:57.336708084 +0000
++++ b/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx	2026-11-01 16:11:57.333572134 +0000
+@@ -1,19 +1,20 @@
+ import React from 'react'
+ 
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ 
+ import { ToggleProps } from './interfaces'
+ import { TogglePriv } from './Toggle.priv'
+ 
+ export const Toggle: React.FC<ToggleProps> = props => {
+ 	const colors = useThemeColor()
++	const isDark = useIsDarkTheme()
+ 
+ 	return (
+ 		<TogglePriv
+ 			{...props}
+ 			styleColors={{
+ 				circleBackground: 'white',
+-				toggleBackgroundInactive: '#EDF0F3',
++				toggleBackgroundInactive: isDark ? colors['input-background'] : '#EDF0F3',
+ 				toggleBackgroundActive: colors['background-header'],
+ 			}}
+ 		/>
+diff -ruN a/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx b/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx	2026-11-01 16:11:57.487476415 +0000
++++ b/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx	2026-11-01 16:11:57.484018628 +0000
+@@ -2,9 +2,11 @@
+ import { View } from 'react-native'
+ 
+ import { useStyles } from '@berty/contexts/styles'
++import { useThemeColor } from '@berty/hooks'
+ 
+ export const CreateGroupFooterPriv: React.FC = props => {
+ 	const { padding, margin } = useStyles()
++	const colors = useThemeColor()
+ 
+ 	return (
+ 		<View
+@@ -12,7 +14,7 @@
+ 				padding.horizontal.huge,
+ 				padding.vertical.large,
+ 				margin.bottom.small,
+-				{ backgroundColor: '#FFFFFF' },
++				{ backgroundColor: colors['main-background'] },
+ 			]}
+ 		>
+ 			{props.children}
+diff -ruN a/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx b/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx
+--- a/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx	2026-11-01 16:11:57.496429011 +0000
++++ b/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx	2026-11-01 16:11:57.493379075 +0000
+@@ -31,7 +31,7 @@
+ 	const colors = useThemeColor()
+ 
+ 	return (
+-		<View style={[!first && { backgroundColor: '#FFFFFF' }]}>
++		<View style={[!first && { backgroundColor: colors['main-background'] }]}>
+ 			<TouchableWithoutFeedback onPress={() => onPress?.()}>
+ 				<View
+ 					style={[
+@@ -39,7 +39,7 @@
+ 						!first && border.shadow.big,
+ 						!first && { shadowColor: colors.shadow },
+ 						disabled && opacity(0.5),
+-						{ backgroundColor: '#FFFFFF' },
++						{ backgroundColor: colors['main-background'] },
+ 						style,
+ 					]}
+ 				>
+diff -ruN a/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx b/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx	2026-11-01 16:11:57.300207591 +0000
++++ b/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx	2026-11-01 16:11:57.296941492 +0000
+@@ -3,6 +3,7 @@
+ 
+ import beapi from '@berty/api'
+ import { MemberAvatar } from '@berty/components/avatars'
++import { useThemeColor } from '@berty/hooks'
+ import { Maybe } from '@berty/utils/type/maybe'
+ 
+ import { IMemberStatus } from './interfaces'
+@@ -22,6 +23,7 @@
+ const disconnectedStatusColor = '#AFAFAF'
+ 
+ const MemberStatus: React.FC<MemberStatusProps> = ({ memberStatus, isMe }) => {
++	const colors = useThemeColor()
+ 	let backgroundColor
+ 	switch (memberStatus) {
+ 		case beapi.protocol.GroupDeviceStatus.Type.TypePeerConnected:
+@@ -41,7 +43,7 @@
+ 	}
+ 
+ 	return (
+-		<View style={[styles.container]}>
++		<View style={[styles.container, { backgroundColor: colors['main-background'] }]}>
+ 			<View style={[styles.status, { backgroundColor }]} />
+ 		</View>
+ 	)
+@@ -71,7 +73,6 @@
+ 		height: containerSize,
+ 		top: 10,
+ 		right: 10,
+-		backgroundColor: '#FFFFFF',
+ 		justifyContent: 'center',
+ 	},
+ 	status: {
+diff -ruN a/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx b/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx
+--- a/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx	2026-11-01 16:11:57.310785850 +0000
++++ b/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx	2026-11-01 16:11:57.307761466 +0000
+@@ -59,7 +59,11 @@
+ 	}, [convPK, dispatch, item.publicKey, item.conversationPublicKey, peers])
+ 
+ 	return peer ? (
+-		<TouchableOpacity onPress={onPress} style={[styles.item, padding.horizontal.medium]}>
++		<TouchableOpacity onPress={onPress} style={[
++				styles.item,
++				padding.horizontal.medium,
++				{ borderTopColor: colors['secondary-background'] },
++			]}>
+ 			<View style={[styles.content]}>
+ 				<MemberAvatarWithStatus
+ 					publicKey={item.publicKey}
+@@ -93,7 +97,11 @@
+ 			style={[
+ 				styles.container,
+ 				border.shadow.medium,
+-				{ shadowColor: colors.shadow, backgroundColor: colors['main-background'] },
++				{
++					shadowColor: colors.shadow,
++					backgroundColor: colors['main-background'],
++					borderColor: colors['secondary-background'],
++				},
+ 			]}
+ 		>
+ 			<DropdownPriv icon='users' placeholder={props.placeholder} testID={props.testID}>
+@@ -118,11 +126,9 @@
+ 		borderRadius: 14,
+ 		flex: 1,
+ 		borderWidth: 1,
+-		borderColor: '#EDF1F7',
+ 	},
+ 	item: {
+ 		borderTopWidth: 1,
+-		borderTopColor: '#EDF1F7',
+ 		flexDirection: 'row',
+ 		alignItems: 'center',
+ 		paddingVertical: 12,
+diff -ruN a/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx b/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx	2026-11-01 16:11:57.268917215 +0000
++++ b/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx	2026-11-01 16:11:57.265856534 +0000
+@@ -1,6 +1,8 @@
+ import React, { ReactNode } from 'react'
+ import { StyleSheet, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { DropdownPriv } from '../Dropdown.priv'
+ import { NetworkProps } from './interfaces'
+ 
+@@ -10,8 +12,9 @@
+ }
+ 
+ export const NetworkAltDropdownPriv: React.FC<NetworkAltDropdownPrivProps> = props => {
++	const colors = useThemeColor()
+ 	return (
+-		<View style={styles.container}>
++		<View style={[styles.container, { backgroundColor: colors['main-background'] }]}>
+ 			<DropdownPriv placeholder={props.placeholder} testID={props.testID}>
+ 				{props.children}
+ 			</DropdownPriv>
+@@ -23,6 +26,5 @@
+ 	container: {
+ 		borderRadius: 14,
+ 		flex: 1,
+-		backgroundColor: 'white',
+ 	},
+ })
+diff -ruN a/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx b/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx	2026-11-01 16:11:57.277522613 +0000
++++ b/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx	2026-11-01 16:11:57.274515562 +0000
+@@ -25,7 +25,7 @@
+ 					styles.container,
+ 					margin.top.medium,
+ 					border.shadow.medium,
+-					{ shadowColor: colors.shadow },
++					{ shadowColor: colors.shadow, backgroundColor: colors['input-background'] },
+ 				]}
+ 			>
+ 				<DropdownPriv
+@@ -45,6 +45,5 @@
+ 	container: {
+ 		borderRadius: 14,
+ 		flex: 1,
+-		backgroundColor: '#F7F8FE',
+ 	},
+ })
+diff -ruN a/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx b/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx
+--- a/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx	2026-11-01 16:11:57.319702683 +0000
++++ b/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx	2026-11-01 16:11:57.316614434 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TouchableOpacity, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { UnifiedText } from '../../shared-components/UnifiedText'
+ import { DropdownPriv } from '../Dropdown.priv'
+ import { DropdownRef } from '../interfaces'
+@@ -19,9 +21,10 @@
+ 
+ export const TextualDropdown: React.FC<TextualDropdownProps> = props => {
+ 	const childRef = useRef<DropdownRef>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<View style={styles.container}>
++		<View style={[styles.container, { backgroundColor: colors['input-background'] }]}>
+ 			<DropdownPriv ref={childRef} placeholder={props.placeholder} testID={props.testID}>
+ 				{props.items.map(item => (
+ 					<TouchableOpacity
+@@ -30,7 +33,7 @@
+ 							props.onChangeItem(item)
+ 							childRef.current?.toggleView?.()
+ 						}}
+-						style={styles.item}
++						style={[styles.item, { borderTopColor: colors['secondary-background'] }]}
+ 						key={`${item.label}-${item.value}`}
+ 					>
+ 						<UnifiedText>{item.label}</UnifiedText>
+@@ -45,13 +48,11 @@
+ 	container: {
+ 		borderRadius: 14,
+ 		flex: 1,
+-		backgroundColor: '#F7F8FE',
+ 	},
+ 	item: {
+ 		height: 48,
+ 		flexDirection: 'row',
+ 		borderTopWidth: 1,
+-		borderTopColor: '#F0F0F7',
+ 		paddingLeft: 15,
+ 		paddingVertical: 12,
+ 		paddingRight: 12,
+diff -ruN a/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx b/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx	2026-11-01 16:11:57.579786849 +0000
++++ b/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx	2026-11-01 16:11:57.576488580 +0000
+@@ -2,6 +2,7 @@
+ import { StyleSheet, TextInput } from 'react-native'
+ 
+ import { useStyles } from '@berty/contexts/styles'
++import { useThemeColor } from '@berty/hooks'
+ 
+ import { InputPriv } from './Input.priv'
+ import { InputProps } from './interfaces'
+@@ -9,11 +10,12 @@
+ export const StyledInputPriv = React.forwardRef<TextInput, InputProps>(
+ 	function StyledInputPriv(props, ref) {
+ 	const { text } = useStyles()
++	const colors = useThemeColor()
+ 
+ 	return (
+ 		<InputPriv
+ 			ref={ref}
+-			style={[text.size.medium, styles.input]}
++			style={[text.size.medium, styles.input, { color: colors['main-text'] }]}
+ 			placeholderTextColor={!props.editable ? '#D0D0D6' : '#8E8E92'}
+ 			{...props}
+ 		/>
+@@ -24,6 +26,5 @@
+ 	input: {
+ 		flex: 1,
+ 		fontFamily: 'Open Sans',
+-		color: '#393C63',
+ 	},
+ })
+diff -ruN a/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx b/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx
+--- a/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx	2026-11-01 16:11:57.604041047 +0000
++++ b/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx	2026-11-01 16:11:57.600871560 +0000
+@@ -1,15 +1,18 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { InputProps } from '../interfaces'
+ import { StyledInputPriv } from '../StyledInput.priv'
+ import { TouchableWrapperPriv } from '../wrapper/TouchableWrapper.priv'
+ 
+ export const LargeInput: React.FC<InputProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperPriv onPress={() => input.current?.focus()} style={styles.container}>
++		<TouchableWrapperPriv onPress={() => input.current?.focus()} style={[styles.container, { backgroundColor: colors['input-background'] }]}>
+ 			<StyledInputPriv
+ 				ref={input}
+ 				{...props}
+@@ -22,7 +25,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	container: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 8,
+ 		height: 54,
+ 		paddingHorizontal: 16,
+diff -ruN a/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx b/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx
+--- a/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx	2026-11-01 16:11:57.594743897 +0000
++++ b/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx	2026-11-01 16:11:57.591440516 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { IconPriv } from '../Icon.priv'
+ import { InputWithIconPriv } from '../InputWithIcon.priv'
+ import { InputWithIconProps } from '../interfaces'
+@@ -8,9 +10,10 @@
+ 
+ export const LargeInputWithIcon: React.FC<InputWithIconProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={styles.container}>
++		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={[styles.container, { backgroundColor: colors['input-background'] }]}>
+ 			<IconPriv
+ 				iconColor='#AEAFC1'
+ 				iconName={props.iconName}
+@@ -29,7 +32,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	container: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 8,
+ 		height: 54,
+ 		paddingHorizontal: 16,
+diff -ruN a/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx b/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx
+--- a/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx	2026-11-01 16:11:57.616329966 +0000
++++ b/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx	2026-11-01 16:11:57.612944497 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { ClearTouchablePriv } from '../ClearTouchable.priv'
+ import { IconPriv } from '../Icon.priv'
+ import { InputWithIconPriv } from '../InputWithIcon.priv'
+@@ -9,9 +11,10 @@
+ 
+ export const MediumClearableInput: React.FC<InputWithIconProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={styles.button}>
++		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={[styles.button, { backgroundColor: colors['input-background'] }]}>
+ 			<IconPriv
+ 				iconColor='#8E8E92'
+ 				iconName={props.iconName}
+@@ -31,7 +34,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	button: {
+-		backgroundColor: '#F2F2F2',
+ 		borderRadius: 14,
+ 		height: 42,
+ 		paddingHorizontal: 12,
+diff -ruN a/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx b/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx
+--- a/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx	2026-11-01 16:11:57.626174222 +0000
++++ b/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx	2026-11-01 16:11:57.622879881 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { IconPriv } from '../Icon.priv'
+ import { InputWithIconPriv } from '../InputWithIcon.priv'
+ import { InputWithIconProps } from '../interfaces'
+@@ -8,9 +10,10 @@
+ 
+ export const MediumInput: React.FC<InputWithIconProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={styles.button}>
++		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={[styles.button, { backgroundColor: colors['input-background'] }]}>
+ 			<IconPriv
+ 				iconColor='#8E8E92'
+ 				iconName={props.iconName}
+@@ -24,7 +27,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	button: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 14,
+ 		height: 42,
+ 		paddingHorizontal: 12,
+diff -ruN a/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx b/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx
+--- a/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx	2026-11-01 16:11:57.561235081 +0000
++++ b/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx	2026-11-01 16:11:57.557799904 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { ClearTouchablePriv } from '../ClearTouchable.priv'
+ import { IconPriv } from '../Icon.priv'
+ import { InputWithIconPriv } from '../InputWithIcon.priv'
+@@ -9,9 +11,10 @@
+ 
+ export const SmallClearableInput: React.FC<InputWithIconProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={styles.container}>
++		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={[styles.container, { backgroundColor: colors['input-background'] }]}>
+ 			<IconPriv
+ 				iconColor='#AEAFC1'
+ 				iconName={props.iconName}
+@@ -31,7 +34,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	container: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 8,
+ 		height: 36,
+ 		paddingHorizontal: 12,
+diff -ruN a/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx b/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx
+--- a/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx	2026-11-01 16:11:57.570800779 +0000
++++ b/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx	2026-11-01 16:11:57.567610133 +0000
+@@ -1,15 +1,18 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { InputProps } from '../interfaces'
+ import { StyledInputPriv } from '../StyledInput.priv'
+ import { TouchableWrapperPriv } from '../wrapper/TouchableWrapper.priv'
+ 
+ export const SmallInput: React.FC<InputProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperPriv onPress={() => input.current?.focus()} style={styles.button}>
++		<TouchableWrapperPriv onPress={() => input.current?.focus()} style={[styles.button, { backgroundColor: colors['input-background'] }]}>
+ 			<StyledInputPriv ref={input} {...props} />
+ 		</TouchableWrapperPriv>
+ 	)
+@@ -17,7 +20,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	button: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 8,
+ 		height: 36,
+ 		paddingHorizontal: 12,
+diff -ruN a/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx b/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx
+--- a/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx	2026-11-01 16:11:57.445104606 +0000
++++ b/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx	2026-11-01 16:11:57.441832003 +0000
+@@ -1,13 +1,19 @@
+ import React from 'react'
+ import { StyleSheet, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ export const DividerItem = () => {
+-	return <View style={styles.container} />
++	const colors = useThemeColor()
++	return (
++		<View
++			style={[styles.container, { backgroundColor: colors['secondary-background'] ?? '#EDF1F7' }]}
++		/>
++	)
+ }
+ 
+ const styles = StyleSheet.create({
+ 	container: {
+ 		height: 1,
+-		backgroundColor: '#EDF1F7',
+ 	},
+ })
+diff -ruN a/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx b/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx	2026-11-01 16:11:57.412912934 +0000
++++ b/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx	2026-11-01 16:11:57.409790574 +0000
+@@ -2,6 +2,8 @@
+ import React from 'react'
+ import { StyleSheet, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { TextPriv } from './Text.priv'
+ 
+ interface IconWithTextPrivProps {
+@@ -11,6 +13,7 @@
+ }
+ 
+ export const IconWithTextPriv: React.FC<IconWithTextPrivProps> = props => {
++	const colors = useThemeColor()
+ 	return (
+ 		<View style={styles.row}>
+ 			<Icon
+@@ -18,7 +21,7 @@
+ 				pack={props.pack}
+ 				width={20}
+ 				height={20}
+-				fill={props.color ?? '#393C63'}
++				fill={props.color ?? colors['main-text']}
+ 			/>
+ 			<TextPriv>{props.children}</TextPriv>
+ 		</View>
+diff -ruN a/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx b/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx
+--- a/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx	2026-11-01 16:11:57.403606931 +0000
++++ b/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx	2026-11-01 16:11:57.400308622 +0000
+@@ -2,6 +2,7 @@
+ import { StyleSheet, View } from 'react-native'
+ 
+ import { useStyles } from '@berty/contexts/styles'
++import { useThemeColor } from '@berty/hooks'
+ 
+ interface ItemSectionProps {
+ 	children?: React.ReactNode
+@@ -9,9 +10,17 @@
+ 
+ export const ItemSection = (props: ItemSectionProps) => {
+ 	const { margin } = useStyles()
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<View style={[margin.top.large, margin.horizontal.medium, styles.container]}>
++		<View
++			style={[
++				margin.top.large,
++				margin.horizontal.medium,
++				styles.container,
++				{ backgroundColor: colors['main-background'] },
++			]}
++		>
+ 			{props.children}
+ 		</View>
+ 	)
+@@ -20,6 +29,5 @@
+ const styles = StyleSheet.create({
+ 	container: {
+ 		borderRadius: 14,
+-		backgroundColor: 'white',
+ 	},
+ })
+diff -ruN a/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx b/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx	2026-11-01 16:11:57.466431795 +0000
++++ b/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx	2026-11-01 16:11:57.463414240 +0000
+@@ -11,7 +11,7 @@
+ 	return (
+ 		<View
+ 			style={[
+-				{ shadowColor: colors.shadow, backgroundColor: props.backgroundColor ?? 'white' },
++				{ shadowColor: colors.shadow, backgroundColor: props.backgroundColor ?? colors['main-background'] },
+ 				border.shadow.medium,
+ 				styles.container,
+ 			]}
+diff -ruN a/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx b/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx
+--- a/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx	2026-11-01 16:11:57.456824365 +0000
++++ b/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx	2026-11-01 16:11:57.453587362 +0000
+@@ -1,8 +1,11 @@
+ import React from 'react'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { PackProps, ToggleMenuItemWithIconProps } from '../interfaces'
+ import { FloatingMenuTogglePriv } from './FloatingMenuToggle.priv'
+ 
+ export const FloatingMenuToggleAlt: React.FC<ToggleMenuItemWithIconProps & PackProps> = props => {
+-	return <FloatingMenuTogglePriv {...props} backgroundColor='#F7F8FE' />
++	const colors = useThemeColor()
++	return <FloatingMenuTogglePriv {...props} backgroundColor={colors['input-background']} />
+ }
+diff -ruN a/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx b/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx
+--- a/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx	2026-11-01 16:11:57.421857117 +0000
++++ b/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx	2026-11-01 16:11:57.418738359 +0000
+@@ -1,15 +1,18 @@
+ import { Icon } from '@ui-kitten/components'
+ import React from 'react'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { MenuItemProps } from '../interfaces'
+ import { MenuItemPriv } from '../MenuItem.priv'
+ import { TextPriv } from '../Text.priv'
+ 
+ export const MenuItem = (props: MenuItemProps) => {
++	const colors = useThemeColor()
+ 	return (
+ 		<MenuItemPriv onPress={props.onPress} testID={props.testID}>
+ 			<TextPriv>{props.children}</TextPriv>
+-			<Icon name='arrow-ios-forward' width={20} height={20} fill='#393C63' />
++			<Icon name='arrow-ios-forward' width={20} height={20} fill={colors['main-text']} />
+ 		</MenuItemPriv>
+ 	)
+ }
+diff -ruN a/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx b/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx	2026-11-01 16:11:57.433366032 +0000
++++ b/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx	2026-11-01 16:11:57.430344714 +0000
+@@ -22,7 +22,7 @@
+ 				{props.children}
+ 			</IconWithTextPriv>
+ 			{!props.noRightArrow && (
+-				<Icon name='arrow-ios-forward' width={20} height={20} fill='#393C63' />
++				<Icon name='arrow-ios-forward' width={20} height={20} fill={colors['main-text']} />
+ 			)}
+ 		</MenuItemPriv>
+ 	)
+diff -ruN a/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx b/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx	2026-11-01 16:11:57.224587435 +0000
++++ b/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx	2026-11-01 16:11:57.221365347 +0000
+@@ -2,12 +2,21 @@
+ import { StyleSheet, View } from 'react-native'
+ 
+ import { useStyles } from '@berty/contexts/styles'
++import { useThemeColor } from '@berty/hooks'
+ 
+ export const CardBodyPriv: React.FC<{}> = props => {
+ 	const { padding } = useStyles()
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<View style={[padding.horizontal.large, padding.bottom.medium, styles.content]}>
++		<View
++			style={[
++				padding.horizontal.large,
++				padding.bottom.medium,
++				styles.content,
++				{ backgroundColor: colors['main-background'] },
++			]}
++		>
+ 			{props.children}
+ 		</View>
+ 	)
+@@ -15,7 +24,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	content: {
+-		backgroundColor: 'white',
+ 		elevation: 7,
+ 		shadowOpacity: 0.1,
+ 		shadowRadius: 40,
+diff -ruN a/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx b/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx
+--- a/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx	2026-11-01 16:11:57.233405924 +0000
++++ b/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx	2026-11-01 16:11:57.230332052 +0000
+@@ -1,15 +1,21 @@
+ import React from 'react'
+ import { StyleSheet, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ export const HeaderPictoWrapperPriv: React.FC<{}> = props => {
+-	return <View style={styles.avatar}>{props.children}</View>
++	const colors = useThemeColor()
++	return (
++		<View style={[styles.avatar, { backgroundColor: colors['main-background'] }]}>
++			{props.children}
++		</View>
++	)
+ }
+ 
+ const styles = StyleSheet.create({
+ 	avatar: {
+ 		width: 98,
+ 		height: 98,
+-		backgroundColor: 'white',
+ 		justifyContent: 'center',
+ 		alignItems: 'center',
+ 		position: 'relative',
+diff -ruN a/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx b/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx
+--- a/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx	2026-11-01 16:11:57.635352529 +0000
++++ b/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx	2026-11-01 16:11:57.632191971 +0000
+@@ -51,7 +51,7 @@
+ 			>
+ 				{header}
+ 			</UnifiedText>
+-			<Card style={[{ backgroundColor: '#F2F2F2', shadowColor: colors.shadow }]}>
++			<Card style={[{ backgroundColor: colors['main-background'], shadowColor: colors.shadow }]}>
+ 				<View style={[padding.medium]}>
+ 					<UnifiedText
+ 						style={[
+diff -ruN a/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx b/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx
+--- a/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx	2026-11-01 16:11:57.254263622 +0000
++++ b/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx	2026-11-01 16:11:57.251096065 +0000
+@@ -106,7 +106,7 @@
+ 
+ 	return (
+ 		<View
+-			style={[padding.horizontal.large, padding.top.small, { flex: 1, backgroundColor: '#FFFFFF' }]}
++			style={[padding.horizontal.large, padding.top.small, { flex: 1, backgroundColor: colors['main-background'] }]}
+ 		>
+ 			<MediumInput
+ 				value={searchText}
+diff -ruN a/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx b/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx
+--- a/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx	2026-11-01 16:11:57.983471491 +0000
++++ b/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx	2026-11-01 16:11:57.980252336 +0000
+@@ -1,28 +1,34 @@
+-import { mapping, light } from "@eva-design/eva";
++import { mapping, light, dark } from "@eva-design/eva";
+ import { ApplicationProvider } from "@ui-kitten/components";
+ import { StatusBar } from "expo-status-bar";
+ import React from "react";
+ 
++import { useIsDarkTheme } from "@berty/hooks";
++
+ interface UIKittenProviderProps {
+ 	children: React.ReactNode;
+ }
+ 
+-export const UIKittenProvider = ({ children }: UIKittenProviderProps) => (
+-	<>
+-		<ApplicationProvider
+-			mapping={mapping}
+-			customMapping={
+-				{
+-					strict: {
+-						"text-font-family": "Open Sans",
+-						"text-paragraph-1-font-weight": "600",
+-					},
+-				} as any
+-			}
+-			theme={light}
+-		>
+-			<StatusBar style="dark" />
+-			{children}
+-		</ApplicationProvider>
+-	</>
+-);
++export const UIKittenProvider = ({ children }: UIKittenProviderProps) => {
++	const isDark = useIsDarkTheme();
++
++	return (
++		<>
++			<ApplicationProvider
++				mapping={mapping}
++				customMapping={
++					{
++						strict: {
++							"text-font-family": "Open Sans",
++							"text-paragraph-1-font-weight": "600",
++						},
++					} as any
++				}
++				theme={isDark ? dark : light}
++			>
++				<StatusBar style={isDark ? "light" : "dark"} />
++				{children}
++			</ApplicationProvider>
++		</>
++	);
++};
+diff -ruN a/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts b/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts
+--- a/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts	2026-11-01 16:11:57.678380734 +0000
++++ b/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts	2026-11-01 16:11:57.674926204 +0000
+@@ -1,21 +1,50 @@
+ import React from 'react'
++import { useColorScheme } from 'react-native'
+ import { useSelector } from 'react-redux'
+ 
+ import darkTheme from '@berty/assets/themes/dark-theme.json'
+ import colors from '@berty/assets/themes/default-theme.json'
+ import {
++	blackThemeColors,
++	nightThemeColors,
+ 	selectThemeCollection,
+ 	selectThemeIsDark,
++	selectThemeMode,
+ 	selectThemeSelected,
+ 	ThemeType,
+ } from '@berty/redux/reducers/theme.reducer'
+ 
++// 'light', 'dark' or 'black': the mode that is really applied (the system setting is resolved)
++export const useEffectiveThemeMode = (): 'light' | 'dark' | 'black' => {
++	const mode = useSelector(selectThemeMode)
++	const systemScheme = useColorScheme()
++
++	if (mode === 'system') {
++		return systemScheme === 'dark' ? 'dark' : 'light'
++	}
++	return mode
++}
++
++export const useIsDarkTheme = (): boolean => {
++	const mode = useEffectiveThemeMode()
++	const legacyIsDark = useSelector(selectThemeIsDark)
++	return mode !== 'light' || legacyIsDark
++}
++
+ export const useThemeColor = (): ThemeType => {
++	const mode = useEffectiveThemeMode()
+ 	const themeIsDark = useSelector(selectThemeIsDark)
+ 	const themeSelected = useSelector(selectThemeSelected)
+ 	const themeCollection = useSelector(selectThemeCollection)
+ 
+ 	return React.useMemo(() => {
++		if (mode === 'black') {
++			return blackThemeColors
++		}
++		if (mode === 'dark') {
++			return nightThemeColors
++		}
++
+ 		if (!Object.entries(themeCollection).length) {
+ 			return colors
+ 		}
+@@ -32,5 +61,5 @@
+ 			}
+ 		}
+ 		return collectionColors as ThemeType
+-	}, [themeCollection, themeIsDark, themeSelected])
++	}, [mode, themeCollection, themeIsDark, themeSelected])
+ }
+diff -ruN a/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json b/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json
+--- a/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-01 16:11:58.279267491 +0000
++++ b/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-01 16:11:58.275454267 +0000
+@@ -187,6 +187,11 @@
+ 		"appearance": {
+ 			"title": "Appearance",
+ 			"dark-button": "Dark Mode",
++			"theme-title": "Theme",
++			"mode-system": "System default",
++			"mode-light": "Light",
++			"mode-dark": "Dark",
++			"mode-black": "Black (AMOLED)",
+ 			"editor-button": "Theme Editor",
+ 			"theme-editor": {
+ 				"title": "Theme Editor"
+diff -ruN a/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts b/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts
+--- a/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts	2026-11-01 16:11:57.963070582 +0000
++++ b/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts	2026-11-01 16:11:57.959721434 +0000
+@@ -3,6 +3,8 @@
+ import darkTheme from '@berty/assets/themes/dark-theme.json'
+ import darkLFTheme from '@berty/assets/themes/DarkLF-theme.json'
+ import defaultTheme from '@berty/assets/themes/default-theme.json'
++import blackTheme from '@berty/assets/themes/black-theme.json'
++import nightTheme from '@berty/assets/themes/night-theme.json'
+ import pinkTheme from '@berty/assets/themes/pink-theme.json'
+ import { randomizeThemeColor } from '@berty/contexts/styles'
+ 
+@@ -41,10 +43,22 @@
+ 
+ type ThemeCollectionType = Partial<Record<AVAILABLE_THEMES | string, ThemeDefinition>>
+ 
++// How the app picks its colors:
++// - system: follows the dark/light setting of the phone
++// - light: the regular Berty theme (or the theme picked in the theme editor)
++// - dark: dark theme, not fully black
++// - black: pure black background (saves battery on AMOLED screens)
++export type ThemeMode = 'system' | 'light' | 'dark' | 'black'
++
++export const nightThemeColors: ThemeType = nightTheme
++export const blackThemeColors: ThemeType = blackTheme
++
+ type ThemeState = {
+ 	selected: keyof AVAILABLE_THEMES | string
+ 	collection: ThemeCollectionType
+ 	isDark: boolean
++	// undefined for the users who had the app before this setting existed
++	mode?: ThemeMode
+ }
+ 
+ const makeRoot = <T>(val: T) => ({
+@@ -82,6 +96,8 @@
+ 
+ export const selectThemeIsDark = (state: LocalRootState): boolean => selectSlice(state).isDark
+ 
++export const selectThemeMode = (state: LocalRootState): ThemeMode => selectSlice(state).mode ?? 'light'
++
+ export const selectCurrentTheme = (state: LocalRootState): string =>
+ 	selectSlice(state).isDark
+ 		? AVAILABLE_THEMES.DEFAULT_DARK_THEME
+@@ -105,6 +121,9 @@
+ 	name: sliceName,
+ 	initialState,
+ 	reducers: {
++		setThemeMode(theme: ThemeState, { payload: { mode } }: PayloadAction<{ mode: ThemeMode }>) {
++			theme.mode = mode
++		},
+ 		toggleDarkTheme(theme: ThemeState) {
+ 			theme.isDark = !theme.isDark
+ 		},
+@@ -152,7 +171,14 @@
+ 	},
+ })
+ 
+-export const { setTheme, randomizeTheme, saveTheme, importTheme, deleteAddedThemes, resetTheme } =
+-	slice.actions
++export const {
++	setTheme,
++	setThemeMode,
++	randomizeTheme,
++	saveTheme,
++	importTheme,
++	deleteAddedThemes,
++	resetTheme,
++} = slice.actions
+ 
+ export default makeRoot(slice.reducer)
+diff -ruN a/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx b/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx
+--- a/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx	2026-11-01 16:11:58.112975123 +0000
++++ b/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx	2026-11-01 16:11:58.109833083 +0000
+@@ -22,12 +22,12 @@
+ 	const accountContacts = useAllContacts()
+ 
+ 	return (
+-		<View style={[flex.tiny, { backgroundColor: '#FFFFFF', minHeight: '100%' }]}>
++		<View style={[flex.tiny, { backgroundColor: colors['main-background'], minHeight: '100%' }]}>
+ 			<StatusBar backgroundColor={colors['background-header']} barStyle='light-content' />
+ 			<View style={{ backgroundColor: colors['background-header'] }}>
+ 				<CreateGroupMemberList />
+ 			</View>
+-			<View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
++			<View style={{ flex: 1, backgroundColor: colors['main-background'] }}>
+ 				<View style={{ top: -30 * scaleHeight, flex: 1 }}>
+ 					<CreateGroupHeader
+ 						title={t('main.home.create-group.add-members')}
+diff -ruN a/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx b/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx
+--- a/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx	2026-11-01 16:11:58.093596159 +0000
++++ b/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx	2026-11-01 16:11:58.090092515 +0000
+@@ -52,7 +52,8 @@
+ 				setIsPressed(true)
+ 			}}
+ 		>
+-			<View style={[row.center, !props.isLast && styles.divider, padding.vertical.scale(7)]}>
++			<View style={[row.center, !props.isLast && styles.divider,
++							!props.isLast && { borderColor: colors['secondary-background'] }, padding.vertical.scale(7)]}>
+ 				{props.children}
+ 			</View>
+ 		</TouchableHighlight>
+@@ -62,6 +63,5 @@
+ const styles = StyleSheet.create({
+ 	divider: {
+ 		borderBottomWidth: 1,
+-		borderColor: '#EDF1F7',
+ 	},
+ })
+diff -ruN a/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx b/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx
+--- a/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-11-01 16:11:58.129425870 +0000
++++ b/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-11-01 16:11:58.126157677 +0000
+@@ -88,12 +88,12 @@
+ 	})
+ 
+ 	return (
+-		<Layout style={[flex.tiny, { backgroundColor: '#FFFFFF' }]}>
++		<Layout style={[flex.tiny, { backgroundColor: colors['main-background'] }]}>
+ 			<StatusBar style='light' />
+ 			<SafeAreaView style={{ backgroundColor: colors['background-header'] }}>
+ 				<CreateGroupMemberList />
+ 			</SafeAreaView>
+-			<View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
++			<View style={{ flex: 1, backgroundColor: colors['main-background'] }}>
+ 				<View style={{ top: -30 * scaleHeight, flex: 1 }}>
+ 					<CreateGroupHeader
+ 						title={t('chat.add-members.contacts')}
+diff -ruN a/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx b/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx
+--- a/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx	2026-11-01 16:11:58.158668684 +0000
++++ b/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx	2026-11-01 16:11:58.155284705 +0000
+@@ -1,45 +1,68 @@
++import { Icon } from '@ui-kitten/components'
+ import React from 'react'
+ import { useTranslation } from 'react-i18next'
+-import { ScrollView, View } from 'react-native'
+-// import { useSelector, useDispatch } from 'react-redux'
++import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+ 
+ import { MenuItem, ItemSection } from '@berty/components'
++import { DividerItem } from '@berty/components/items/DividerItem'
+ import { useAppDimensions } from '@berty/contexts/app-dimensions.context'
+-import { useThemeColor } from '@berty/hooks'
++import { useAppDispatch, useAppSelector, useThemeColor } from '@berty/hooks'
+ import { ScreenFC, useNavigation } from '@berty/navigation'
++import { selectThemeMode, setThemeMode, ThemeMode } from '@berty/redux/reducers/theme.reducer'
+ import { useTopInset } from '@berty/utils/react-native/useTopInset'
+-// import { selectThemeIsDark, toggleDarkTheme } from '@berty/redux/reducers/theme.reducer'
++
++const MODES: { mode: ThemeMode; label: string }[] = [
++	{ mode: 'system', label: 'settings.appearance.mode-system' },
++	{ mode: 'light', label: 'settings.appearance.mode-light' },
++	{ mode: 'dark', label: 'settings.appearance.mode-dark' },
++	{ mode: 'black', label: 'settings.appearance.mode-black' },
++]
+ 
+ export const Appearance: ScreenFC<'Settings.Appearance'> = () => {
+ 	const { scaleSize } = useAppDimensions()
+ 	const colors = useThemeColor()
+-	// const isDark = useSelector(selectThemeIsDark)
+-	// const dispatch = useDispatch()
+ 	const { navigate } = useNavigation()
+ 	const { t } = useTranslation()
+ 	const topInset = useTopInset()
++	const dispatch = useAppDispatch()
++	const currentMode = useAppSelector(selectThemeMode)
+ 
+ 	return (
+-		<View style={{ backgroundColor: colors['secondary-background'], flex: 1, paddingTop: topInset }}>
++		<View
++			style={{
++				backgroundColor: colors['secondary-background'] ?? colors['main-background'],
++				flex: 1,
++				paddingTop: topInset,
++			}}
++		>
+ 			<ScrollView
+ 				bounces={false}
+ 				contentContainerStyle={{ paddingBottom: 12 * scaleSize }}
+ 				showsVerticalScrollIndicator={false}
+ 			>
+ 				<ItemSection>
+-					{/*
+-					<ButtonSettingV2
+-						text={t('settings.appearance.dark-button')}
+-						toggle={{
+-							enable: true,
+-							value: isDark,
+-							action: async () => {
+-								dispatch(toggleDarkTheme())
+-							},
+-						}}
+-					/>
+-					*/}
+-					{/* TODO: replace dark toggle by a menu or a radio button:  Light, Dark, System based*/}
++					{MODES.map(({ mode, label }, index) => (
++						<React.Fragment key={mode}>
++							{index > 0 && <DividerItem />}
++							<TouchableOpacity
++								style={styles.row}
++								onPress={() => dispatch(setThemeMode({ mode }))}
++								testID={`theme-mode-${mode}`}
++							>
++								<Text style={[styles.label, { color: colors['main-text'] }]}>{t(label)}</Text>
++								{currentMode === mode && (
++									<Icon
++										name='checkmark-outline'
++										width={22}
++										height={22}
++										fill={colors['background-header']}
++									/>
++								)}
++							</TouchableOpacity>
++						</React.Fragment>
++					))}
++				</ItemSection>
++				<ItemSection>
+ 					<MenuItem onPress={() => navigate('Settings.ThemeEditor')}>
+ 						{t('settings.appearance.editor-button')}
+ 					</MenuItem>
+@@ -48,3 +71,16 @@
+ 		</View>
+ 	)
+ }
++
++const styles = StyleSheet.create({
++	row: {
++		flexDirection: 'row',
++		alignItems: 'center',
++		justifyContent: 'space-between',
++		paddingHorizontal: 16,
++		paddingVertical: 16,
++	},
++	label: {
++		fontSize: 16,
++	},
++})
+diff -ruN a/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx b/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx
+--- a/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-11-01 16:11:58.211688238 +0000
++++ b/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-11-01 16:11:58.208292292 +0000
+@@ -312,6 +312,13 @@
+ 							{t('settings.home.accounts-button')}
+ 						</MenuItemWithIcon>
+ 						<DividerItem />
++						<MenuItemWithIcon
++							iconName='color-palette-outline'
++							onPress={() => navigate('Settings.Appearance')}
++						>
++							{t('settings.home.appearance-button')}
++						</MenuItemWithIcon>
++						<DividerItem />
+ 						{networkConfig && (
+ 							<MenuItemWithIcon
+ 								iconName='wifi-outline'
