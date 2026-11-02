@@ -153,7 +153,7 @@
 	"settings": {
 		"home": {
 			"title": "Settings",
-			"proximity-button": "Off-Grid Communication",
+			"proximity-button": "Nearby communication (Bluetooth)",
 			"notifications-button": "Notifications",
 			"appearance-button": "Appearance",
 			"accounts-button": "Accounts",
@@ -187,6 +187,11 @@
 		"appearance": {
 			"title": "Appearance",
 			"dark-button": "Dark Mode",
+			"theme-title": "Theme",
+			"mode-system": "System default",
+			"mode-light": "Light",
+			"mode-dark": "Dark",
+			"mode-black": "Black (AMOLED)",
 			"editor-button": "Theme Editor",
 			"theme-editor": {
 				"title": "Theme Editor"
@@ -543,7 +548,9 @@
 		},
 		"background-service": {
 			"title": "Berty is running in the background",
-			"desc": "This keeps you connected so you can receive messages and notifications."
+			"desc": "Keeps Berty connected to receive messages. Touch and hold to hide this notification, or turn it off in Settings.",
+			"setting-title": "Run in the background",
+			"setting-desc": "Keep Berty running to receive messages and notifications when the app is closed"
 		},
 		"quit": {
 			"title": "Quit Berty?",

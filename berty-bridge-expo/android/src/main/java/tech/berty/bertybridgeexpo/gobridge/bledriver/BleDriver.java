@@ -14,6 +14,9 @@ import android.os.Handler;
 import android.os.Looper;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 // Make the BleDriver class a Singleton
 // see https://medium.com/@kevalpatel2106/how-to-make-the-perfect-singleton-de6b951dfdb0
@@ -77,6 +80,48 @@ public class BleDriver {
         }
     };
     private boolean mBroadcastReceiverRegistered = false;
+
+    // Safety net: if Bluetooth is on but the driver is not running (the start failed because the
+    // Bluetooth stack was not ready yet right after it was turned on, the stop and start of a
+    // quick off/on were run in the wrong order, a permission was granted later...), try again.
+    private static final long WATCHDOG_PERIOD_SECONDS = 10;
+    private ScheduledExecutorService mWatchdog;
+
+    private synchronized void startWatchdog() {
+        if (mWatchdog != null) {
+            return;
+        }
+        mWatchdog = Executors.newSingleThreadScheduledExecutor();
+        mWatchdog.scheduleWithFixedDelay(
+            this::watchdogCheck, WATCHDOG_PERIOD_SECONDS, WATCHDOG_PERIOD_SECONDS, TimeUnit.SECONDS);
+    }
+
+    private synchronized void stopWatchdog() {
+        if (mWatchdog != null) {
+            mWatchdog.shutdownNow();
+            mWatchdog = null;
+        }
+    }
+
+    private void watchdogCheck() {
+        try {
+            synchronized (this) {
+                if (mLocalPid == null || !mBroadcastReceiverRegistered || isStarted()) {
+                    return;
+                }
+                BluetoothManager manager = (BluetoothManager) mAppContext.getSystemService(Context.BLUETOOTH_SERVICE);
+                BluetoothAdapter adapter = manager != null ? manager.getAdapter() : null;
+                if (adapter == null || adapter.getState() != BluetoothAdapter.STATE_ON) {
+                    return;
+                }
+                mLogger.i(TAG, "watchdog: Bluetooth is on but the BLE driver is not running, starting it");
+                mAdapterState = BluetoothAdapter.STATE_ON;
+                startBleDriver();
+            }
+        } catch (RuntimeException e) {
+            mLogger.e(TAG, "watchdog: error", e);
+        }
+    }
 
     private BleDriver(Context context, Logger logger) {
         if (mBleDriver != null) {
@@ -282,6 +327,7 @@ public class BleDriver {
         }
 
         startBleDriver();
+        startWatchdog();
     }
 
     private synchronized void stopBleDriver() {
@@ -297,17 +343,18 @@ public class BleDriver {
         if (mScanner != null) {
             mScanner.stop();
         }
-        mDeviceManager.closeAllDeviceConnections();
-        if (mGattServer != null) {
-            mGattServer.stop();
-        }
         // Tell the Go side that every peer is gone: the connections are dead, and
         // without this the stale peers make it believe it is still connected.
         mPeerManager.unregisterAllPeers();
+        // Do not wait for disconnection callbacks: they never come if Bluetooth is going off
+        mDeviceManager.clearAll();
+        if (mGattServer != null) {
+            mGattServer.stop();
+        }
         setStarted(false);
 
         if (mHandshakeLooper != null) mHandshakeLooper.quit();
-        if (mCallbacksLooper != null) mCallbacksLooper.quit();
+        if (mCallbacksLooper != null) mCallbacksLooper.quitSafely(); // let pending HandleLostPeer calls run
         if (mWriteLooper != null) mWriteLooper.quit();
         if (mReadLooper != null) mReadLooper.quit();
 
@@ -322,6 +369,7 @@ public class BleDriver {
     }
 
     public synchronized void StopBleDriver() {
+        stopWatchdog();
         stopBleDriver();
         if (mBroadcastReceiverRegistered) {
             mAppContext.unregisterReceiver(mBroadcastReceiver);

@@ -10,6 +10,7 @@ import withIosTeamId from "./withIosTeamId";
 import withBridgingHeader from "./withBridgingHeader";
 import withBertyNotificationService from "./withAndroidNotificationService";
 import withAndroidBackgroundService from "./withAndroidBackgroundService";
+import withAndroidNotificationIcons from "./withAndroidNotificationIcons";
 
 const withConfig: ConfigPlugin = (config) => {
 	return withPlugins(config, [
@@ -22,6 +23,7 @@ const withConfig: ConfigPlugin = (config) => {
 		withBlePermissions,
 		withBertyNotificationService,
 		withAndroidBackgroundService,
+		withAndroidNotificationIcons,
 	]);
 };
 

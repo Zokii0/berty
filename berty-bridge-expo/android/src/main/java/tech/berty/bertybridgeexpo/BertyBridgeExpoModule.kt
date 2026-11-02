@@ -1,10 +1,13 @@
 package tech.berty.bertybridgeexpo
 
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Resources
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -256,10 +259,61 @@ class BertyBridgeExpoModule : Module() {
             }
         }
 
+        // true when the phone is connected to a Wi-Fi, mobile data or ethernet network (even if
+        // that network has no internet access, e.g. a local Wi-Fi mesh)
+        AsyncFunction("hasNetworkConnection") { promise: Promise ->
+            val manager = getReactContext().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val capabilities = manager?.activeNetwork?.let { manager.getNetworkCapabilities(it) }
+            promise.resolve(
+                capabilities != null && (
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                )
+            )
+        }
+
+        AsyncFunction("isBluetoothEnabled") { promise: Promise ->
+            val manager = getReactContext().getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            promise.resolve(manager?.adapter?.isEnabled == true)
+        }
+
+        // Shows the system dialog asking the user to turn Bluetooth on
+        AsyncFunction("requestEnableBluetooth") { promise: Promise ->
+            val activity = appContext.currentActivity
+            if (activity == null) {
+                promise.resolve(false)
+            } else {
+                try {
+                    activity.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                    promise.resolve(true)
+                } catch (e: Exception) {
+                    Logger.e(TAG, "unable to request to enable Bluetooth", e)
+                    promise.resolve(false)
+                }
+            }
+        }
+
         // Keeps the process alive while the app is in the background (see BackgroundService).
         // Must be called while the app is in the foreground, e.g. right after initBridge.
         AsyncFunction("startBackgroundService") { title: String, text: String, promise: Promise ->
             BackgroundService.start(getReactContext(), title, text)
+            promise.resolve(true)
+        }
+
+        AsyncFunction("isBackgroundServiceEnabled") { promise: Promise ->
+            promise.resolve(BackgroundService.isEnabled(getReactContext()))
+        }
+
+        // Setting changed by the user: remembered, and applied right away
+        AsyncFunction("setBackgroundServiceEnabled") { enabled: Boolean, title: String, text: String, promise: Promise ->
+            val context = getReactContext()
+            BackgroundService.setEnabled(context, enabled)
+            if (enabled) {
+                BackgroundService.start(context, title, text)
+            } else {
+                BackgroundService.stop(context)
+            }
             promise.resolve(true)
         }
 

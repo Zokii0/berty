@@ -463,6 +463,28 @@ public class PeerDevice {
         }
     }
 
+    // Drop all the state of this device without waiting for any BLE callback.
+    // When Bluetooth is turned off the stack never calls onConnectionStateChange(), so a device
+    // that was "DISCONNECTING" would stay in that state forever and the scanner would then skip
+    // it ("client is already connected") even after Bluetooth is back.
+    public void forceReset() {
+        try {
+            if (mIsClient) {
+                closeClient();
+            } else {
+                closeServer();
+            }
+        } catch (RuntimeException e) {
+            mLogger.e(TAG, String.format("forceReset: device=%s: error while closing", mLogger.sensitiveObject(getMACAddress())), e);
+        }
+        synchronized (mLockClient) {
+            mClientState = CONNECTION_STATE.DISCONNECTED;
+        }
+        synchronized (mLockServer) {
+            mServerState = CONNECTION_STATE.DISCONNECTED;
+        }
+    }
+
     public void closeClient() {
         mLogger.d(TAG, String.format("closeClient called: device=%s", mLogger.sensitiveObject(getMACAddress())));
 

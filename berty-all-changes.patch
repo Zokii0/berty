@@ -1,0 +1,3024 @@
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-11-01 20:11:37.266930167 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-11-01 20:11:37.263832686 +0000
+@@ -1,11 +1,17 @@
+ package tech.berty.bertybridgeexpo
+ 
+ import android.bluetooth.BluetoothAdapter
++import android.bluetooth.BluetoothManager
+ import android.content.Context
++import android.content.Intent
+ import android.content.IntentFilter
+ import android.content.res.Resources
+ import android.net.ConnectivityManager
++import android.net.NetworkCapabilities
+ import android.os.Build
++import android.os.Handler
++import android.os.Looper
++import android.os.Process
+ import android.util.Base64
+ import android.util.Log
+ import bertybridge.Bertybridge
+@@ -39,6 +45,7 @@
+ import tech.berty.bertybridgeexpo.notification.FcmBus
+ import tech.berty.bertybridgeexpo.notification.NotificationService
+ import tech.berty.bertybridgeexpo.rootdir.RootDirModule
++import tech.berty.bertybridgeexpo.service.BackgroundService
+ import java.io.File
+ 
+ enum class logLevel(val value: String) : Enumerable {
+@@ -112,6 +119,7 @@
+             bridgeMessenger = null
+             remoteBridge = null
+             serviceClient = null
++            appContext.reactContext?.let { BackgroundService.stop(it) }
+         }
+ 
+         OnStartObserving {
+@@ -251,6 +259,92 @@
+             }
+         }
+ 
++        // true when the phone is connected to a Wi-Fi, mobile data or ethernet network (even if
++        // that network has no internet access, e.g. a local Wi-Fi mesh)
++        AsyncFunction("hasNetworkConnection") { promise: Promise ->
++            val manager = getReactContext().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
++            val capabilities = manager?.activeNetwork?.let { manager.getNetworkCapabilities(it) }
++            promise.resolve(
++                capabilities != null && (
++                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
++                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
++                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
++                )
++            )
++        }
++
++        AsyncFunction("isBluetoothEnabled") { promise: Promise ->
++            val manager = getReactContext().getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
++            promise.resolve(manager?.adapter?.isEnabled == true)
++        }
++
++        // Shows the system dialog asking the user to turn Bluetooth on
++        AsyncFunction("requestEnableBluetooth") { promise: Promise ->
++            val activity = appContext.currentActivity
++            if (activity == null) {
++                promise.resolve(false)
++            } else {
++                try {
++                    activity.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
++                    promise.resolve(true)
++                } catch (e: Exception) {
++                    Logger.e(TAG, "unable to request to enable Bluetooth", e)
++                    promise.resolve(false)
++                }
++            }
++        }
++
++        // Keeps the process alive while the app is in the background (see BackgroundService).
++        // Must be called while the app is in the foreground, e.g. right after initBridge.
++        AsyncFunction("startBackgroundService") { title: String, text: String, promise: Promise ->
++            BackgroundService.start(getReactContext(), title, text)
++            promise.resolve(true)
++        }
++
++        AsyncFunction("isBackgroundServiceEnabled") { promise: Promise ->
++            promise.resolve(BackgroundService.isEnabled(getReactContext()))
++        }
++
++        // Setting changed by the user: remembered, and applied right away
++        AsyncFunction("setBackgroundServiceEnabled") { enabled: Boolean, title: String, text: String, promise: Promise ->
++            val context = getReactContext()
++            BackgroundService.setEnabled(context, enabled)
++            if (enabled) {
++                BackgroundService.start(context, title, text)
++            } else {
++                BackgroundService.stop(context)
++            }
++            promise.resolve(true)
++        }
++
++        AsyncFunction("stopBackgroundService") { promise: Promise ->
++            BackgroundService.stop(getReactContext())
++            promise.resolve(true)
++        }
++
++        // Fully quit the app: close the bridge, stop the service, remove the task and
++        // end the process so that nothing keeps running in the background.
++        AsyncFunction("quitApp") { promise: Promise ->
++            val context = getReactContext()
++            Thread {
++                try {
++                    bridgeMessenger?.close()
++                    remoteBridge?.close()
++                } catch (e: Exception) {
++                    Logger.e(TAG, "bridge close error", e)
++                }
++                bridgeMessenger = null
++                remoteBridge = null
++                serviceClient = null
++                BackgroundService.stop(context)
++                appContext.currentActivity?.finishAndRemoveTask()
++                promise.resolve(true)
++                Handler(Looper.getMainLooper()).postDelayed({
++                    Process.killProcess(Process.myPid())
++                }, 500)
++            }.start()
++        }
++
+         AsyncFunction("closeBridge") { promise: Promise ->
+             try {
+                 if (bridgeMessenger != null) {
+@@ -262,6 +356,7 @@
+                     remoteBridge = null
+                 }
+                 serviceClient = null
++                BackgroundService.stop(getReactContext())
+                 promise.resolve(true)
+             } catch (err: CodedException) {
+                 promise.reject(err)
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-11-01 20:11:37.346912722 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-11-01 20:11:37.343882655 +0000
+@@ -7,14 +7,14 @@
+ 
+ class LifecycleListener : ReactActivityLifecycleListener {
+     override fun onCreate(activity: Activity, savedInstanceState: Bundle?) {
+-        super.onDestroy(activity)
++        super.onCreate(activity, savedInstanceState)
+ 
+         state = AppState.FOREGROUND
+         Log.i(TAG, "onCreate")
+     }
+ 
+     override fun onResume(activity: Activity) {
+-        super.onDestroy(activity)
++        super.onResume(activity)
+ 
+         state = AppState.FOREGROUND
+         Log.i(TAG, "onResume")
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-11-01 20:11:37.316061840 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-11-01 20:11:37.312932819 +0000
+@@ -14,6 +14,9 @@
+ import android.os.Looper;
+ 
+ import java.nio.charset.StandardCharsets;
++import java.util.concurrent.Executors;
++import java.util.concurrent.ScheduledExecutorService;
++import java.util.concurrent.TimeUnit;
+ 
+ // Make the BleDriver class a Singleton
+ // see https://medium.com/@kevalpatel2106/how-to-make-the-perfect-singleton-de6b951dfdb0
+@@ -78,6 +81,48 @@
+     };
+     private boolean mBroadcastReceiverRegistered = false;
+ 
++    // Safety net: if Bluetooth is on but the driver is not running (the start failed because the
++    // Bluetooth stack was not ready yet right after it was turned on, the stop and start of a
++    // quick off/on were run in the wrong order, a permission was granted later...), try again.
++    private static final long WATCHDOG_PERIOD_SECONDS = 10;
++    private ScheduledExecutorService mWatchdog;
++
++    private synchronized void startWatchdog() {
++        if (mWatchdog != null) {
++            return;
++        }
++        mWatchdog = Executors.newSingleThreadScheduledExecutor();
++        mWatchdog.scheduleWithFixedDelay(
++            this::watchdogCheck, WATCHDOG_PERIOD_SECONDS, WATCHDOG_PERIOD_SECONDS, TimeUnit.SECONDS);
++    }
++
++    private synchronized void stopWatchdog() {
++        if (mWatchdog != null) {
++            mWatchdog.shutdownNow();
++            mWatchdog = null;
++        }
++    }
++
++    private void watchdogCheck() {
++        try {
++            synchronized (this) {
++                if (mLocalPid == null || !mBroadcastReceiverRegistered || isStarted()) {
++                    return;
++                }
++                BluetoothManager manager = (BluetoothManager) mAppContext.getSystemService(Context.BLUETOOTH_SERVICE);
++                BluetoothAdapter adapter = manager != null ? manager.getAdapter() : null;
++                if (adapter == null || adapter.getState() != BluetoothAdapter.STATE_ON) {
++                    return;
++                }
++                mLogger.i(TAG, "watchdog: Bluetooth is on but the BLE driver is not running, starting it");
++                mAdapterState = BluetoothAdapter.STATE_ON;
++                startBleDriver();
++            }
++        } catch (RuntimeException e) {
++            mLogger.e(TAG, "watchdog: error", e);
++        }
++    }
++
+     private BleDriver(Context context, Logger logger) {
+         if (mBleDriver != null) {
+             throw new RuntimeException("Use getInstance() method to get the singleton instance of this class");
+@@ -249,6 +294,7 @@
+ 
+         if (!mGattServer.start(mLocalPid)) {
+             mLogger.e(TAG, "startBleDriver: mGattServer failed to start");
++            stopBleDriver();
+             return;
+         }
+ 
+@@ -281,6 +327,7 @@
+         }
+ 
+         startBleDriver();
++        startWatchdog();
+     }
+ 
+     private synchronized void stopBleDriver() {
+@@ -289,23 +336,40 @@
+             return;
+         }
+ 
+-        if (!isStarted()) {
+-            mLogger.d(TAG, "driver is not started");
+-            return;
++        // Tear down whatever has been started, even if startBleDriver() failed halfway.
++        if (mAdvertiser != null) {
++            mAdvertiser.stop();
++        }
++        if (mScanner != null) {
++            mScanner.stop();
++        }
++        // Tell the Go side that every peer is gone: the connections are dead, and
++        // without this the stale peers make it believe it is still connected.
++        mPeerManager.unregisterAllPeers();
++        // Do not wait for disconnection callbacks: they never come if Bluetooth is going off
++        mDeviceManager.clearAll();
++        if (mGattServer != null) {
++            mGattServer.stop();
+         }
+-
+-        mAdvertiser.stop();
+-        mScanner.stop();
+-        mDeviceManager.closeAllDeviceConnections();
+-        mGattServer.stop();
+         setStarted(false);
+-        mHandshakeLooper.quit();
+-        mCallbacksLooper.quit();
+-        mWriteLooper.quit();
+-        mReadLooper.quit();
++
++        if (mHandshakeLooper != null) mHandshakeLooper.quit();
++        if (mCallbacksLooper != null) mCallbacksLooper.quitSafely(); // let pending HandleLostPeer calls run
++        if (mWriteLooper != null) mWriteLooper.quit();
++        if (mReadLooper != null) mReadLooper.quit();
++
++        // BluetoothLeAdvertiser, BluetoothLeScanner and BluetoothGattServer instances are
++        // tied to the adapter session and are no longer valid once Bluetooth has been turned
++        // off. Drop them so that the next start creates fresh ones, otherwise BLE never
++        // comes back after Bluetooth has been toggled.
++        mAdvertiser = null;
++        mScanner = null;
++        mGattServer = null;
++        setInit(false);
+     }
+ 
+     public synchronized void StopBleDriver() {
++        stopWatchdog();
+         stopBleDriver();
+         if (mBroadcastReceiverRegistered) {
+             mAppContext.unregisterReceiver(mBroadcastReceiver);
+@@ -344,6 +408,10 @@
+ 
+                 return peerDevice.write(writer, payload, false);
+             } else if (peerDevice.isServerConnected()) {
++                if (mGattServer == null) {
++                    mLogger.e(TAG, "SendToPeer error: GATT server not running");
++                    return false;
++                }
+                 return mGattServer.writeAndNotify(peerDevice, payload);
+             } else {
+                 mLogger.e(TAG, "SendToPeer error: remote device is disconnected");
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java	2026-11-01 20:11:37.284060621 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java	2026-11-01 20:11:37.280672974 +0000
+@@ -87,6 +87,16 @@
+         }
+     }
+ 
++    // Forget every device (used when the driver is stopped, e.g. Bluetooth turned off):
++    // BluetoothGatt objects and states from the previous Bluetooth session are not reusable.
++    public synchronized void clearAll() {
++        mLogger.i(TAG, "clearAll called");
++        for (PeerDevice peerDevice : new java.util.ArrayList<>(mPeerDevices.values())) {
++            peerDevice.forceReset();
++        }
++        mPeerDevices.clear();
++    }
++
+     public synchronized void remove(String macAddress) {
+         mLogger.d(TAG, String.format("remove called: device=%s", mLogger.sensitiveObject(macAddress)));
+ 
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-11-01 20:11:37.306118153 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-11-01 20:11:37.302958011 +0000
+@@ -463,6 +463,28 @@
+         }
+     }
+ 
++    // Drop all the state of this device without waiting for any BLE callback.
++    // When Bluetooth is turned off the stack never calls onConnectionStateChange(), so a device
++    // that was "DISCONNECTING" would stay in that state forever and the scanner would then skip
++    // it ("client is already connected") even after Bluetooth is back.
++    public void forceReset() {
++        try {
++            if (mIsClient) {
++                closeClient();
++            } else {
++                closeServer();
++            }
++        } catch (RuntimeException e) {
++            mLogger.e(TAG, String.format("forceReset: device=%s: error while closing", mLogger.sensitiveObject(getMACAddress())), e);
++        }
++        synchronized (mLockClient) {
++            mClientState = CONNECTION_STATE.DISCONNECTED;
++        }
++        synchronized (mLockServer) {
++            mServerState = CONNECTION_STATE.DISCONNECTED;
++        }
++    }
++
+     public void closeClient() {
+         mLogger.d(TAG, String.format("closeClient called: device=%s", mLogger.sensitiveObject(getMACAddress())));
+ 
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-11-01 20:11:37.296920803 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-11-01 20:11:37.293856171 +0000
+@@ -1,6 +1,8 @@
+ package tech.berty.bertybridgeexpo.gobridge.bledriver;
+ 
++import java.util.ArrayList;
+ import java.util.HashMap;
++import java.util.Map;
+ 
+ public class PeerManager {
+     private static final String TAG = "bty.ble.PeerManager";
+@@ -65,6 +67,19 @@
+         mPeers.remove(peerID);
+     }
+ 
++    // Drop every known peer, notifying the Go side. Used when the BLE driver is stopped
++    // (e.g. Bluetooth turned off): the underlying connections no longer exist.
++    public synchronized void unregisterAllPeers() {
++        for (Map.Entry<String, Peer> entry : new ArrayList<>(mPeers.entrySet())) {
++            Peer peer = entry.getValue();
++            if (peer.isHandshakeSuccessful()) {
++                BleInterface.BLEHandleLostPeer(entry.getKey());
++            }
++            peer.removeDevices();
++        }
++        mPeers.clear();
++    }
++
+     public synchronized Peer get(String peerID) {
+         return mPeers.get(peerID);
+     }
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-11-01 20:11:37.327917283 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-11-01 20:11:37.324831172 +0000
+@@ -176,6 +176,18 @@
+             return;
+         }
+ 
++        // Always stop the scan cycle first: the state can be DISABLED while the timer is alive
++        // (pause phase of the cycle) and a timer left running would keep driving a scanner that
++        // is no longer valid after the driver has been restarted.
++        if (mTask != null) {
++            mTask.cancel();
++        }
++        if (mTimer != null) {
++            mTimer.cancel(); // also ends the timer thread
++            mTimer.purge();
++            mTimer = null;
++        }
++
+         if (getScannerState() == SCANNER_STATE_DISABLED) {
+             mLogger.i(TAG, "stop: scanner not running");
+             return;
+@@ -184,13 +196,11 @@
+         mLogger.i(TAG, "stop scanning");
+         if (mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
+             mBluetoothLeScanner.stopScan(this);
+-            setScannerState(SCANNER_STATE_DISABLED);
+         } else {
+             mLogger.e(TAG, "stop scanner error: BT adapter not running");
+         }
+-        mTask.cancel();
+-        mTimer.purge();
+-        mTimer = null;
++        // always reset the state, even if Bluetooth is off (otherwise the scanner stays "enabled")
++        setScannerState(SCANNER_STATE_DISABLED);
+     }
+ 
+     // Return the status of the scanner
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-11-01 20:11:37.246681314 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-11-01 20:11:37.242881432 +0000
+@@ -13,9 +13,21 @@
+ public class NotificationHelper extends ContextWrapper {
+     public static final String CHANNEL_ID_MESSAGE = "tech.berty.notification.message";
+     public static final String CHANNEL_NAME_MESSAGE = "Berty Message";
++    public static final String CHANNEL_ID_SERVICE = "tech.berty.notification.service";
++    public static final String CHANNEL_NAME_SERVICE = "Berty background service";
+ 
+     private NotificationManager manager;
+ 
++    public static final String ICON_MESSAGE = "ic_stat_berty";
++    public static final String ICON_SERVICE = "ic_stat_berty_service";
++
++    // Status bar icon generated by the config plugin (withAndroidNotificationIcons),
++    // with the system chat icon as a fallback.
++    public static int getSmallIcon(Context context, String name) {
++        int id = context.getResources().getIdentifier(name, "drawable", context.getPackageName());
++        return id != 0 ? id : android.R.drawable.stat_notify_chat;
++    }
++
+     public NotificationHelper(Context context) {
+         super(context);
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+@@ -35,6 +47,16 @@
+         notificationChannel.setLightColor(Color.GRAY);
+         notificationChannel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+         getManager().createNotificationChannel(notificationChannel);
++
++        // Silent, low importance channel for the ongoing background service notification
++        NotificationChannel serviceChannel = new NotificationChannel(
++            CHANNEL_ID_SERVICE,
++            CHANNEL_NAME_SERVICE,
++            NotificationManager.IMPORTANCE_LOW
++        );
++        serviceChannel.setShowBadge(false);
++        serviceChannel.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
++        getManager().createNotificationChannel(serviceChannel);
+     }
+ 
+     public NotificationManager getManager() {
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java	2026-11-01 20:11:37.256827527 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java	2026-11-01 20:11:37.253732024 +0000
+@@ -83,7 +83,7 @@
+         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID_MESSAGE)
+             .setContentTitle(fpush.getTitle())
+             .setContentText(fpush.getBody())
+-            .setSmallIcon(android.R.drawable.stat_notify_chat)
++            .setSmallIcon(NotificationHelper.getSmallIcon(this, NotificationHelper.ICON_MESSAGE))
+             .setCategory(Notification.CATEGORY_MESSAGE)
+             .setGroup(fpush.getConversationIdentifier())
+             .setVibrate(new long[]{125L, 75L, 125L})
+diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java
+--- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java	1970-01-01 00:00:00.000000000 +0000
++++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java	2026-11-01 20:11:37.338127656 +0000
+@@ -0,0 +1,117 @@
++package tech.berty.bertybridgeexpo.service;
++
++import android.app.Notification;
++import android.app.PendingIntent;
++import android.app.Service;
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.ServiceInfo;
++import android.os.Build;
++import android.os.IBinder;
++
++import androidx.annotation.Nullable;
++import androidx.core.app.NotificationCompat;
++import androidx.core.app.ServiceCompat;
++import androidx.core.content.ContextCompat;
++
++import tech.berty.bertybridgeexpo.gobridge.Logger;
++import tech.berty.bertybridgeexpo.notification.NotificationHelper;
++
++/**
++ * Foreground service that keeps the Berty process (and so the Go node and the BLE
++ * driver) alive while the app is in the background or has been removed from the
++ * recent apps, like Briar does with its BriarService. Without it Android is free to
++ * freeze or kill the process, and messages are only delivered once the app is opened.
++ *
++ * The service does not do any work by itself: it only owns an ongoing notification.
++ */
++public class BackgroundService extends Service {
++    private static final String TAG = "BackgroundService";
++    private static final int ONGOING_NOTIFICATION_ID = 0x4265;
++    private static final String EXTRA_TITLE = "title";
++    private static final String EXTRA_TEXT = "text";
++
++    private static final String PREFS_NAME = "tech.berty.bertybridgeexpo.background_service";
++    private static final String PREF_ENABLED = "enabled";
++
++    // The user can turn the background service off in the settings of the app
++    public static boolean isEnabled(Context context) {
++        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(PREF_ENABLED, true);
++    }
++
++    public static void setEnabled(Context context, boolean enabled) {
++        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(PREF_ENABLED, enabled).apply();
++    }
++
++    public static void start(Context context, String title, String text) {
++        if (!isEnabled(context)) {
++            return;
++        }
++        Intent intent = new Intent(context, BackgroundService.class);
++        intent.putExtra(EXTRA_TITLE, title);
++        intent.putExtra(EXTRA_TEXT, text);
++        try {
++            ContextCompat.startForegroundService(context, intent);
++        } catch (RuntimeException e) {
++            // e.g. ForegroundServiceStartNotAllowedException when started from the background
++            Logger.e(TAG, "unable to start the background service", e);
++        }
++    }
++
++    public static void stop(Context context) {
++        context.stopService(new Intent(context, BackgroundService.class));
++    }
++
++    @Override
++    public int onStartCommand(Intent intent, int flags, int startId) {
++        String title = intent != null ? intent.getStringExtra(EXTRA_TITLE) : null;
++        String text = intent != null ? intent.getStringExtra(EXTRA_TEXT) : null;
++
++        try {
++            ServiceCompat.startForeground(
++                this,
++                ONGOING_NOTIFICATION_ID,
++                buildNotification(title, text),
++                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
++                    ? ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
++                    : 0
++            );
++        } catch (RuntimeException e) {
++            Logger.e(TAG, "unable to enter the foreground", e);
++            stopSelf();
++        }
++
++        // Don't restart automatically if killed: the bridge would not be running anyway,
++        // the JS side starts the service again when it initializes the bridge.
++        return START_NOT_STICKY;
++    }
++
++    private Notification buildNotification(String title, String text) {
++        // make sure the channel exists
++        new NotificationHelper(getBaseContext());
++
++        Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
++        PendingIntent contentIntent = null;
++        if (launch != null) {
++            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
++            contentIntent = PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE);
++        }
++
++        return new NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID_SERVICE)
++            .setContentTitle(title != null ? title : "Berty")
++            .setContentText(text != null ? text : "Running in the background")
++            .setSmallIcon(NotificationHelper.getSmallIcon(this, NotificationHelper.ICON_SERVICE))
++            .setCategory(Notification.CATEGORY_SERVICE)
++            .setPriority(NotificationCompat.PRIORITY_LOW)
++            .setOngoing(true)
++            .setShowWhen(false)
++            .setContentIntent(contentIntent)
++            .build();
++    }
++
++    @Nullable
++    @Override
++    public IBinder onBind(Intent intent) {
++        return null;
++    }
++}
+diff -ruN ma/berty-bridge-expo/mobile/App.tsx mb/berty-bridge-expo/mobile/App.tsx
+--- ma/berty-bridge-expo/mobile/App.tsx	2026-11-01 20:11:38.357573265 +0000
++++ mb/berty-bridge-expo/mobile/App.tsx	2026-11-01 20:11:38.354699316 +0000
+@@ -1,4 +1,4 @@
+-import { NavigationContainer } from "@react-navigation/native";
++import { DefaultTheme, NavigationContainer } from "@react-navigation/native";
+ import React from "react";
+ import { View } from "react-native";
+ 
+@@ -7,7 +7,8 @@
+ import NotificationProvider from "@berty/contexts/notification.context";
+ import { PermissionsProvider } from "@berty/contexts/permissions.context";
+ import { UIKittenProvider } from "@berty/contexts/uiKitten.context";
+-import { useMountEffect, useThemeColor } from "@berty/hooks";
++import { useIsDarkTheme, useMountEffect, useThemeColor } from "@berty/hooks";
++import { loadThemeMode } from "@berty/utils/theme/themeMode";
+ import { isReadyRef, navigationRef } from "@berty/navigation";
+ import { Navigation } from "@berty/navigation/stacks";
+ import { initI18N } from "@berty/i18n";
+@@ -28,6 +29,41 @@
+ 	);
+ };
+ 
++// Navigation colors (screen backgrounds, transitions) follow the theme
++const ThemedNavigationContainer = ({ children }: BackgroundProps) => {
++	const colors = useThemeColor();
++	const isDark = useIsDarkTheme();
++	const navigationTheme = React.useMemo(
++		() => ({
++			...DefaultTheme,
++			dark: isDark,
++			colors: {
++				...DefaultTheme.colors,
++				background: colors["main-background"],
++				card: colors["main-background"],
++				text: colors["main-text"],
++				border: colors["secondary-background"] ?? colors["main-background"],
++			},
++		}),
++		[colors, isDark]
++	);
++
++	return (
++		<NavigationContainer
++			ref={navigationRef}
++			theme={navigationTheme}
++			onReady={() => {
++				isReadyRef.current = true;
++			}}
++		>
++			{children}
++		</NavigationContainer>
++	);
++};
++
++// the theme mode is a device setting: load it as early as possible
++loadThemeMode();
++
+ const App: React.FC = () => {
+ 	useMountEffect(() => {
+ 		return () => {
+@@ -40,18 +76,13 @@
+ 			<UIKittenProvider>
+ 				<Background>
+ 					<ErrorScreen>
+-						<NavigationContainer
+-							ref={navigationRef}
+-							onReady={() => {
+-								isReadyRef.current = true;
+-							}}
+-						>
++						<ThemedNavigationContainer>
+ 							<PermissionsProvider>
+ 								<NotificationProvider>
+ 									<Navigation />
+ 								</NotificationProvider>
+ 							</PermissionsProvider>
+-						</NavigationContainer>
++						</ThemedNavigationContainer>
+ 					</ErrorScreen>
+ 				</Background>
+ 			</UIKittenProvider>
+diff -ruN ma/berty-bridge-expo/mobile/app.config.ts mb/berty-bridge-expo/mobile/app.config.ts
+--- ma/berty-bridge-expo/mobile/app.config.ts	2026-11-01 20:11:38.378153071 +0000
++++ mb/berty-bridge-expo/mobile/app.config.ts	2026-11-01 20:11:38.375217589 +0000
+@@ -126,6 +126,11 @@
+ 				{
+ 					backgroundColor: "#FFFFFF",
+ 					image: "./assets/images/splash.png",
++					// shown when the phone is in dark mode, so the app doesn't start with a white flash
++					dark: {
++						backgroundColor: "#262842",
++						image: "./assets/images/splash.png",
++					},
+ 				},
+ 			],
+ 			"expo-audio",
+diff -ruN ma/berty-bridge-expo/mobile/src/assets/themes/black-theme.json mb/berty-bridge-expo/mobile/src/assets/themes/black-theme.json
+--- ma/berty-bridge-expo/mobile/src/assets/themes/black-theme.json	1970-01-01 00:00:00.000000000 +0000
++++ mb/berty-bridge-expo/mobile/src/assets/themes/black-theme.json	2026-11-01 20:11:37.921589508 +0000
+@@ -0,0 +1,15 @@
++{
++	"main-text": "#F2F2F7",
++	"main-background": "#000000",
++	"secondary-background": "#0C0C10",
++	"secondary-text": "#9C9EB8",
++	"background-header": "#23268A",
++	"secondary-background-header": "#B7305A",
++	"alt-secondary-background-header": "#15162E",
++	"reverted-main-text": "#FFFFFF",
++	"positive-asset": "#20235C",
++	"negative-asset": "#7D7F9E",
++	"warning-asset": "#FF5C8D",
++	"input-background": "#17171F",
++	"shadow": "#000000"
++}
+diff -ruN ma/berty-bridge-expo/mobile/src/assets/themes/night-theme.json mb/berty-bridge-expo/mobile/src/assets/themes/night-theme.json
+--- ma/berty-bridge-expo/mobile/src/assets/themes/night-theme.json	1970-01-01 00:00:00.000000000 +0000
++++ mb/berty-bridge-expo/mobile/src/assets/themes/night-theme.json	2026-11-01 20:11:37.915069471 +0000
+@@ -0,0 +1,15 @@
++{
++	"main-text": "#ECEDF7",
++	"main-background": "#262842",
++	"secondary-background": "#181927",
++	"secondary-text": "#A9ABC6",
++	"background-header": "#4046B8",
++	"secondary-background-header": "#D93A6B",
++	"alt-secondary-background-header": "#30335A",
++	"reverted-main-text": "#FFFFFF",
++	"positive-asset": "#3A3E80",
++	"negative-asset": "#8D8FB5",
++	"warning-asset": "#FF5C8D",
++	"input-background": "#31344F",
++	"shadow": "#000000"
++}
+diff -ruN ma/berty-bridge-expo/mobile/src/components/LoaderDots.tsx mb/berty-bridge-expo/mobile/src/components/LoaderDots.tsx
+--- ma/berty-bridge-expo/mobile/src/components/LoaderDots.tsx	2026-11-01 20:11:37.679203996 +0000
++++ mb/berty-bridge-expo/mobile/src/components/LoaderDots.tsx	2026-11-01 20:11:37.676141842 +0000
+@@ -1,11 +1,12 @@
+ import React from 'react'
+-import { View, Image, StatusBar } from 'react-native'
++import { ActivityIndicator, View, Image, StatusBar } from 'react-native'
+ 
+ import source from '@berty/assets/images/loader_dots.gif'
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ 
+ export const LoaderDots: React.FC = () => {
+ 	const colors = useThemeColor()
++	const isDark = useIsDarkTheme()
+ 
+ 	return (
+ 		<View
+@@ -17,11 +18,19 @@
+ 				backgroundColor: colors['main-background'],
+ 			}}
+ 		>
+-			<StatusBar backgroundColor={colors['main-background']} barStyle='dark-content' />
+-			<Image
+-				source={source}
+-				style={{ width: '80%', height: '40%', maxWidth: 170, maxHeight: 80 }}
++			<StatusBar
++				backgroundColor={colors['main-background']}
++				barStyle={isDark ? 'light-content' : 'dark-content'}
+ 			/>
++			{isDark ? (
++				// the animated image has an opaque white background, so it can't be used on dark themes
++				<ActivityIndicator size='large' color={colors['main-text']} />
++			) : (
++				<Image
++					source={source}
++					style={{ width: '80%', height: '40%', maxWidth: 170, maxHeight: 80 }}
++				/>
++			)}
+ 		</View>
+ 	)
+ }
+diff -ruN ma/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx mb/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx
+--- ma/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx	2026-11-01 20:11:37.801579725 +0000
++++ mb/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx	2026-11-01 20:11:37.798731490 +0000
+@@ -1,9 +1,15 @@
+ import React from 'react'
+ import { StatusBar } from 'react-native'
+ 
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ 
+ export const StatusBarPrimary: React.FC = () => {
+ 	const colors = useThemeColor()
+-	return <StatusBar backgroundColor={colors['main-background']} barStyle='dark-content' />
++	const isDark = useIsDarkTheme()
++	return (
++		<StatusBar
++			backgroundColor={colors['main-background']}
++			barStyle={isDark ? 'light-content' : 'dark-content'}
++		/>
++	)
+ }
+diff -ruN ma/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx mb/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx
+--- ma/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx	2026-11-01 20:11:37.495809653 +0000
++++ mb/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx	2026-11-01 20:11:37.492672793 +0000
+@@ -1,13 +1,16 @@
+ import React from 'react'
+ import { StatusBar } from 'react-native'
+ 
++import { useIsDarkTheme } from '@berty/hooks'
++
+ import { FlexCenterViewPriv } from '../flex'
+ import { UnifiedText } from '../shared-components/UnifiedText'
+ 
+ export const CenteredTextScreen: React.FC = ({ children }) => {
++	const isDark = useIsDarkTheme()
+ 	return (
+ 		<>
+-			<StatusBar barStyle='dark-content' />
++			<StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
+ 			<FlexCenterViewPriv>
+ 				<UnifiedText>{children}</UnifiedText>
+ 			</FlexCenterViewPriv>
+diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx mb/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx
+--- ma/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx	2026-11-01 20:11:37.530066533 +0000
++++ mb/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx	2026-11-01 20:11:37.526753477 +0000
+@@ -13,6 +13,7 @@
+ 	useThemeColor,
+ 	useMessengerClient,
+ 	useMountEffect,
++	useBluetoothEnablePrompt,
+ } from '@berty/hooks'
+ import {
+ 	resetChatInput,
+@@ -57,7 +58,11 @@
+ 		const isFake = !!(conversation as any)?.fake
+ 		const sendEnabled = !sending && !!(!isFake && message)
+ 
++		const askToEnableBluetooth = useBluetoothEnablePrompt()
++
+ 		const sendMessageBouncy = React.useCallback(async () => {
++			// offline (no Wi-Fi/mobile data) and Bluetooth off: offer to turn Bluetooth on
++			askToEnableBluetooth()
+ 			try {
+ 				if (!messengerClient) {
+ 					throw new Error('no messenger client')
+@@ -87,7 +92,16 @@
+ 				console.warn('e sending message:', e)
+ 				setSending(false)
+ 			}
+-		}, [convPK, playSound, dispatch, message, messengerClient, setSending, setMessage])
++		}, [
++			askToEnableBluetooth,
++			convPK,
++			playSound,
++			dispatch,
++			message,
++			messengerClient,
++			setSending,
++			setMessage,
++		])
+ 
+ 		const handlePressSend = React.useCallback(async () => {
+ 			if (sending) {
+diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx mb/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx
+--- ma/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx	2026-11-01 20:11:37.548612833 +0000
++++ mb/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx	2026-11-01 20:11:37.545512624 +0000
+@@ -3,16 +3,19 @@
+ 
+ import beapi from '@berty/api'
+ import { MemberAvatar } from '@berty/components/avatars'
++import { useThemeColor } from '@berty/hooks'
+ 
+ import { MemberBarItem } from './interfaces'
+ 
+ export const AvatarWrapper: React.FC<{ member: MemberBarItem; convId: string; index: number }> =
+ 	props => {
++		const colors = useThemeColor()
+ 		return (
+ 			<View
+ 				style={[
+ 					styles.avatarWrapper,
+ 					{
++						borderColor: colors['main-background'],
+ 						zIndex: props.index,
+ 						opacity:
+ 							props.member.alreadyConnected &&
+@@ -37,7 +40,6 @@
+ 		width: 32,
+ 		height: 32,
+ 		borderRadius: 32,
+-		borderColor: 'white',
+ 		borderWidth: 1.5,
+ 		justifyContent: 'center',
+ 		alignItems: 'center',
+diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx mb/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx
+--- ma/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx	2026-11-01 20:11:37.557382540 +0000
++++ mb/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx	2026-11-01 20:11:37.554528415 +0000
+@@ -2,6 +2,7 @@
+ import { StyleSheet, View } from 'react-native'
+ 
+ import { UnifiedText } from '@berty/components/shared-components/UnifiedText'
++import { useThemeColor } from '@berty/hooks'
+ 
+ import { AvatarWrapper } from './AvatarWrapper'
+ import { MemberBarItem } from './interfaces'
+@@ -16,6 +17,7 @@
+ }
+ 
+ export const Avatars: React.FC<AvatarsProps> = props => {
++	const colors = useThemeColor()
+ 	return (
+ 		<View style={styles.container}>
+ 			<View style={styles.placeholder} />
+@@ -28,7 +30,7 @@
+ 				/>
+ 			))}
+ 			{props.membersLength > MAX_MEMBERS_TO_SHOW && (
+-				<View style={styles.manyMembersWrapper}>
++				<View style={[styles.manyMembersWrapper, { backgroundColor: colors['secondary-background'] }]}>
+ 					<UnifiedText style={styles.manyMembersText}>
+ 						+{props.membersLength - MAX_MEMBERS_TO_SHOW}
+ 					</UnifiedText>
+@@ -51,7 +53,6 @@
+ 		width: WIDTH_AVATAR_WRAPPER,
+ 		height: 30,
+ 		borderRadius: 30,
+-		backgroundColor: '#EDF1F7',
+ 		justifyContent: 'center',
+ 		alignItems: 'center',
+ 		marginLeft: -10,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx mb/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx
+--- ma/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx	2026-11-01 20:11:37.566026863 +0000
++++ mb/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx	2026-11-01 20:11:37.563084192 +0000
+@@ -7,6 +7,7 @@
+ 	useAppSelector,
+ 	useConversationMembers,
+ 	useMessengerClient,
++	useThemeColor,
+ } from '@berty/hooks'
+ import { useNavigation } from '@berty/navigation'
+ import {
+@@ -26,6 +27,7 @@
+ 
+ export const MemberBar: React.FC<MemberBarProps> = props => {
+ 	const navigation = useNavigation()
++	const colors = useThemeColor()
+ 	const messengerClient = useMessengerClient()
+ 	const dispatch = useAppDispatch()
+ 	const peers = useAppSelector(selectPeerNetworkStatusDict)
+@@ -94,7 +96,7 @@
+ 	return (
+ 		<TouchableOpacity
+ 			onPress={() => navigation.navigate('Chat.MultiMemberSettings', { convId: props.convId })}
+-			style={styles.container}
++			style={[styles.container, { backgroundColor: colors['main-background'] }]}
+ 		>
+ 			<View style={styles.barWidth}>
+ 				{isOneConnected && memberList !== undefined ? (
+@@ -111,7 +113,6 @@
+ const styles = StyleSheet.create({
+ 	container: {
+ 		marginTop: 10,
+-		backgroundColor: 'white',
+ 		borderRadius: 18,
+ 		shadowOffset: {
+ 			width: 0,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx mb/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx
+--- ma/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx	2026-11-01 20:11:37.507333754 +0000
++++ mb/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx	2026-11-01 20:11:37.504166512 +0000
+@@ -1,19 +1,20 @@
+ import React from 'react'
+ 
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ 
+ import { ToggleProps } from './interfaces'
+ import { TogglePriv } from './Toggle.priv'
+ 
+ export const Toggle: React.FC<ToggleProps> = props => {
+ 	const colors = useThemeColor()
++	const isDark = useIsDarkTheme()
+ 
+ 	return (
+ 		<TogglePriv
+ 			{...props}
+ 			styleColors={{
+ 				circleBackground: 'white',
+-				toggleBackgroundInactive: '#EDF0F3',
++				toggleBackgroundInactive: isDark ? colors['input-background'] : '#EDF0F3',
+ 				toggleBackgroundActive: colors['background-header'],
+ 			}}
+ 		/>
+diff -ruN ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx mb/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx	2026-11-01 20:11:37.659223892 +0000
++++ mb/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx	2026-11-01 20:11:37.656092179 +0000
+@@ -2,9 +2,11 @@
+ import { View } from 'react-native'
+ 
+ import { useStyles } from '@berty/contexts/styles'
++import { useThemeColor } from '@berty/hooks'
+ 
+ export const CreateGroupFooterPriv: React.FC = props => {
+ 	const { padding, margin } = useStyles()
++	const colors = useThemeColor()
+ 
+ 	return (
+ 		<View
+@@ -12,7 +14,7 @@
+ 				padding.horizontal.huge,
+ 				padding.vertical.large,
+ 				margin.bottom.small,
+-				{ backgroundColor: '#FFFFFF' },
++				{ backgroundColor: colors['main-background'] },
+ 			]}
+ 		>
+ 			{props.children}
+diff -ruN ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx mb/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx
+--- ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx	2026-11-01 20:11:37.667920762 +0000
++++ mb/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx	2026-11-01 20:11:37.664910170 +0000
+@@ -31,7 +31,7 @@
+ 	const colors = useThemeColor()
+ 
+ 	return (
+-		<View style={[!first && { backgroundColor: '#FFFFFF' }]}>
++		<View style={[!first && { backgroundColor: colors['main-background'] }]}>
+ 			<TouchableWithoutFeedback onPress={() => onPress?.()}>
+ 				<View
+ 					style={[
+@@ -39,7 +39,7 @@
+ 						!first && border.shadow.big,
+ 						!first && { shadowColor: colors.shadow },
+ 						disabled && opacity(0.5),
+-						{ backgroundColor: '#FFFFFF' },
++						{ backgroundColor: colors['main-background'] },
+ 						style,
+ 					]}
+ 				>
+diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx	2026-11-01 20:11:37.462886605 +0000
++++ mb/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx	2026-11-01 20:11:37.459804728 +0000
+@@ -3,6 +3,7 @@
+ 
+ import beapi from '@berty/api'
+ import { MemberAvatar } from '@berty/components/avatars'
++import { useThemeColor } from '@berty/hooks'
+ import { Maybe } from '@berty/utils/type/maybe'
+ 
+ import { IMemberStatus } from './interfaces'
+@@ -22,6 +23,7 @@
+ const disconnectedStatusColor = '#AFAFAF'
+ 
+ const MemberStatus: React.FC<MemberStatusProps> = ({ memberStatus, isMe }) => {
++	const colors = useThemeColor()
+ 	let backgroundColor
+ 	switch (memberStatus) {
+ 		case beapi.protocol.GroupDeviceStatus.Type.TypePeerConnected:
+@@ -41,7 +43,7 @@
+ 	}
+ 
+ 	return (
+-		<View style={[styles.container]}>
++		<View style={[styles.container, { backgroundColor: colors['main-background'] }]}>
+ 			<View style={[styles.status, { backgroundColor }]} />
+ 		</View>
+ 	)
+@@ -71,7 +73,6 @@
+ 		height: containerSize,
+ 		top: 10,
+ 		right: 10,
+-		backgroundColor: '#FFFFFF',
+ 		justifyContent: 'center',
+ 	},
+ 	status: {
+diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx
+--- ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx	2026-11-01 20:11:37.473623223 +0000
++++ mb/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx	2026-11-01 20:11:37.470726147 +0000
+@@ -59,7 +59,11 @@
+ 	}, [convPK, dispatch, item.publicKey, item.conversationPublicKey, peers])
+ 
+ 	return peer ? (
+-		<TouchableOpacity onPress={onPress} style={[styles.item, padding.horizontal.medium]}>
++		<TouchableOpacity onPress={onPress} style={[
++				styles.item,
++				padding.horizontal.medium,
++				{ borderTopColor: colors['secondary-background'] },
++			]}>
+ 			<View style={[styles.content]}>
+ 				<MemberAvatarWithStatus
+ 					publicKey={item.publicKey}
+@@ -93,7 +97,11 @@
+ 			style={[
+ 				styles.container,
+ 				border.shadow.medium,
+-				{ shadowColor: colors.shadow, backgroundColor: colors['main-background'] },
++				{
++					shadowColor: colors.shadow,
++					backgroundColor: colors['main-background'],
++					borderColor: colors['secondary-background'],
++				},
+ 			]}
+ 		>
+ 			<DropdownPriv icon='users' placeholder={props.placeholder} testID={props.testID}>
+@@ -118,11 +126,9 @@
+ 		borderRadius: 14,
+ 		flex: 1,
+ 		borderWidth: 1,
+-		borderColor: '#EDF1F7',
+ 	},
+ 	item: {
+ 		borderTopWidth: 1,
+-		borderTopColor: '#EDF1F7',
+ 		flexDirection: 'row',
+ 		alignItems: 'center',
+ 		paddingVertical: 12,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx	2026-11-01 20:11:37.431053757 +0000
++++ mb/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx	2026-11-01 20:11:37.427865656 +0000
+@@ -1,6 +1,8 @@
+ import React, { ReactNode } from 'react'
+ import { StyleSheet, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { DropdownPriv } from '../Dropdown.priv'
+ import { NetworkProps } from './interfaces'
+ 
+@@ -10,8 +12,9 @@
+ }
+ 
+ export const NetworkAltDropdownPriv: React.FC<NetworkAltDropdownPrivProps> = props => {
++	const colors = useThemeColor()
+ 	return (
+-		<View style={styles.container}>
++		<View style={[styles.container, { backgroundColor: colors['main-background'] }]}>
+ 			<DropdownPriv placeholder={props.placeholder} testID={props.testID}>
+ 				{props.children}
+ 			</DropdownPriv>
+@@ -23,6 +26,5 @@
+ 	container: {
+ 		borderRadius: 14,
+ 		flex: 1,
+-		backgroundColor: 'white',
+ 	},
+ })
+diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx	2026-11-01 20:11:37.440510535 +0000
++++ mb/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx	2026-11-01 20:11:37.437614956 +0000
+@@ -25,7 +25,7 @@
+ 					styles.container,
+ 					margin.top.medium,
+ 					border.shadow.medium,
+-					{ shadowColor: colors.shadow },
++					{ shadowColor: colors.shadow, backgroundColor: colors['input-background'] },
+ 				]}
+ 			>
+ 				<DropdownPriv
+@@ -45,6 +45,5 @@
+ 	container: {
+ 		borderRadius: 14,
+ 		flex: 1,
+-		backgroundColor: '#F7F8FE',
+ 	},
+ })
+diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx
+--- ma/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx	2026-11-01 20:11:37.482685372 +0000
++++ mb/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx	2026-11-01 20:11:37.479593407 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TouchableOpacity, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { UnifiedText } from '../../shared-components/UnifiedText'
+ import { DropdownPriv } from '../Dropdown.priv'
+ import { DropdownRef } from '../interfaces'
+@@ -19,9 +21,10 @@
+ 
+ export const TextualDropdown: React.FC<TextualDropdownProps> = props => {
+ 	const childRef = useRef<DropdownRef>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<View style={styles.container}>
++		<View style={[styles.container, { backgroundColor: colors['input-background'] }]}>
+ 			<DropdownPriv ref={childRef} placeholder={props.placeholder} testID={props.testID}>
+ 				{props.items.map(item => (
+ 					<TouchableOpacity
+@@ -30,7 +33,7 @@
+ 							props.onChangeItem(item)
+ 							childRef.current?.toggleView?.()
+ 						}}
+-						style={styles.item}
++						style={[styles.item, { borderTopColor: colors['secondary-background'] }]}
+ 						key={`${item.label}-${item.value}`}
+ 					>
+ 						<UnifiedText>{item.label}</UnifiedText>
+@@ -45,13 +48,11 @@
+ 	container: {
+ 		borderRadius: 14,
+ 		flex: 1,
+-		backgroundColor: '#F7F8FE',
+ 	},
+ 	item: {
+ 		height: 48,
+ 		flexDirection: 'row',
+ 		borderTopWidth: 1,
+-		borderTopColor: '#F0F0F7',
+ 		paddingLeft: 15,
+ 		paddingVertical: 12,
+ 		paddingRight: 12,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx mb/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx	2026-11-01 20:11:37.737780919 +0000
++++ mb/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx	2026-11-01 20:11:37.734618339 +0000
+@@ -2,6 +2,7 @@
+ import { StyleSheet, TextInput } from 'react-native'
+ 
+ import { useStyles } from '@berty/contexts/styles'
++import { useThemeColor } from '@berty/hooks'
+ 
+ import { InputPriv } from './Input.priv'
+ import { InputProps } from './interfaces'
+@@ -9,11 +10,12 @@
+ export const StyledInputPriv = React.forwardRef<TextInput, InputProps>(
+ 	function StyledInputPriv(props, ref) {
+ 	const { text } = useStyles()
++	const colors = useThemeColor()
+ 
+ 	return (
+ 		<InputPriv
+ 			ref={ref}
+-			style={[text.size.medium, styles.input]}
++			style={[text.size.medium, styles.input, { color: colors['main-text'] }]}
+ 			placeholderTextColor={!props.editable ? '#D0D0D6' : '#8E8E92'}
+ 			{...props}
+ 		/>
+@@ -24,6 +26,5 @@
+ 	input: {
+ 		flex: 1,
+ 		fontFamily: 'Open Sans',
+-		color: '#393C63',
+ 	},
+ })
+diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx
+--- ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx	2026-11-01 20:11:37.760947254 +0000
++++ mb/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx	2026-11-01 20:11:37.758087813 +0000
+@@ -1,15 +1,18 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { InputProps } from '../interfaces'
+ import { StyledInputPriv } from '../StyledInput.priv'
+ import { TouchableWrapperPriv } from '../wrapper/TouchableWrapper.priv'
+ 
+ export const LargeInput: React.FC<InputProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperPriv onPress={() => input.current?.focus()} style={styles.container}>
++		<TouchableWrapperPriv onPress={() => input.current?.focus()} style={[styles.container, { backgroundColor: colors['input-background'] }]}>
+ 			<StyledInputPriv
+ 				ref={input}
+ 				{...props}
+@@ -22,7 +25,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	container: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 8,
+ 		height: 54,
+ 		paddingHorizontal: 16,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx mb/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx
+--- ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx	2026-11-01 20:11:37.752217217 +0000
++++ mb/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx	2026-11-01 20:11:37.749004419 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { IconPriv } from '../Icon.priv'
+ import { InputWithIconPriv } from '../InputWithIcon.priv'
+ import { InputWithIconProps } from '../interfaces'
+@@ -8,9 +10,10 @@
+ 
+ export const LargeInputWithIcon: React.FC<InputWithIconProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={styles.container}>
++		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={[styles.container, { backgroundColor: colors['input-background'] }]}>
+ 			<IconPriv
+ 				iconColor='#AEAFC1'
+ 				iconName={props.iconName}
+@@ -29,7 +32,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	container: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 8,
+ 		height: 54,
+ 		paddingHorizontal: 16,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx
+--- ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx	2026-11-01 20:11:37.772513985 +0000
++++ mb/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx	2026-11-01 20:11:37.769306651 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { ClearTouchablePriv } from '../ClearTouchable.priv'
+ import { IconPriv } from '../Icon.priv'
+ import { InputWithIconPriv } from '../InputWithIcon.priv'
+@@ -9,9 +11,10 @@
+ 
+ export const MediumClearableInput: React.FC<InputWithIconProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={styles.button}>
++		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={[styles.button, { backgroundColor: colors['input-background'] }]}>
+ 			<IconPriv
+ 				iconColor='#8E8E92'
+ 				iconName={props.iconName}
+@@ -31,7 +34,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	button: {
+-		backgroundColor: '#F2F2F2',
+ 		borderRadius: 14,
+ 		height: 42,
+ 		paddingHorizontal: 12,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx
+--- ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx	2026-11-01 20:11:37.781395508 +0000
++++ mb/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx	2026-11-01 20:11:37.778534441 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { IconPriv } from '../Icon.priv'
+ import { InputWithIconPriv } from '../InputWithIcon.priv'
+ import { InputWithIconProps } from '../interfaces'
+@@ -8,9 +10,10 @@
+ 
+ export const MediumInput: React.FC<InputWithIconProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={styles.button}>
++		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={[styles.button, { backgroundColor: colors['input-background'] }]}>
+ 			<IconPriv
+ 				iconColor='#8E8E92'
+ 				iconName={props.iconName}
+@@ -24,7 +27,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	button: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 14,
+ 		height: 42,
+ 		paddingHorizontal: 12,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx
+--- ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx	2026-11-01 20:11:37.719350576 +0000
++++ mb/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx	2026-11-01 20:11:37.716115060 +0000
+@@ -1,6 +1,8 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { ClearTouchablePriv } from '../ClearTouchable.priv'
+ import { IconPriv } from '../Icon.priv'
+ import { InputWithIconPriv } from '../InputWithIcon.priv'
+@@ -9,9 +11,10 @@
+ 
+ export const SmallClearableInput: React.FC<InputWithIconProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={styles.container}>
++		<TouchableWrapperWithIconPriv onPress={() => input.current?.focus()} style={[styles.container, { backgroundColor: colors['input-background'] }]}>
+ 			<IconPriv
+ 				iconColor='#AEAFC1'
+ 				iconName={props.iconName}
+@@ -31,7 +34,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	container: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 8,
+ 		height: 36,
+ 		paddingHorizontal: 12,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx
+--- ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx	2026-11-01 20:11:37.728331579 +0000
++++ mb/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx	2026-11-01 20:11:37.725009690 +0000
+@@ -1,15 +1,18 @@
+ import React, { useRef } from 'react'
+ import { StyleSheet, TextInput } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { InputProps } from '../interfaces'
+ import { StyledInputPriv } from '../StyledInput.priv'
+ import { TouchableWrapperPriv } from '../wrapper/TouchableWrapper.priv'
+ 
+ export const SmallInput: React.FC<InputProps> = props => {
+ 	const input = useRef<TextInput>(null)
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<TouchableWrapperPriv onPress={() => input.current?.focus()} style={styles.button}>
++		<TouchableWrapperPriv onPress={() => input.current?.focus()} style={[styles.button, { backgroundColor: colors['input-background'] }]}>
+ 			<StyledInputPriv ref={input} {...props} />
+ 		</TouchableWrapperPriv>
+ 	)
+@@ -17,7 +20,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	button: {
+-		backgroundColor: '#F7F8FE',
+ 		borderRadius: 8,
+ 		height: 36,
+ 		paddingHorizontal: 12,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx mb/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx
+--- ma/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx	2026-11-01 20:11:37.618522322 +0000
++++ mb/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx	2026-11-01 20:11:37.615574680 +0000
+@@ -1,13 +1,19 @@
+ import React from 'react'
+ import { StyleSheet, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ export const DividerItem = () => {
+-	return <View style={styles.container} />
++	const colors = useThemeColor()
++	return (
++		<View
++			style={[styles.container, { backgroundColor: colors['secondary-background'] ?? '#EDF1F7' }]}
++		/>
++	)
+ }
+ 
+ const styles = StyleSheet.create({
+ 	container: {
+ 		height: 1,
+-		backgroundColor: '#EDF1F7',
+ 	},
+ })
+diff -ruN ma/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx mb/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx	2026-11-01 20:11:37.587444915 +0000
++++ mb/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx	2026-11-01 20:11:37.584514317 +0000
+@@ -2,6 +2,8 @@
+ import React from 'react'
+ import { StyleSheet, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { TextPriv } from './Text.priv'
+ 
+ interface IconWithTextPrivProps {
+@@ -11,6 +13,7 @@
+ }
+ 
+ export const IconWithTextPriv: React.FC<IconWithTextPrivProps> = props => {
++	const colors = useThemeColor()
+ 	return (
+ 		<View style={styles.row}>
+ 			<Icon
+@@ -18,7 +21,7 @@
+ 				pack={props.pack}
+ 				width={20}
+ 				height={20}
+-				fill={props.color ?? '#393C63'}
++				fill={props.color ?? colors['main-text']}
+ 			/>
+ 			<TextPriv>{props.children}</TextPriv>
+ 		</View>
+diff -ruN ma/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx mb/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx
+--- ma/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx	2026-11-01 20:11:37.578892238 +0000
++++ mb/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx	2026-11-01 20:11:37.575863090 +0000
+@@ -2,6 +2,7 @@
+ import { StyleSheet, View } from 'react-native'
+ 
+ import { useStyles } from '@berty/contexts/styles'
++import { useThemeColor } from '@berty/hooks'
+ 
+ interface ItemSectionProps {
+ 	children?: React.ReactNode
+@@ -9,9 +10,17 @@
+ 
+ export const ItemSection = (props: ItemSectionProps) => {
+ 	const { margin } = useStyles()
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<View style={[margin.top.large, margin.horizontal.medium, styles.container]}>
++		<View
++			style={[
++				margin.top.large,
++				margin.horizontal.medium,
++				styles.container,
++				{ backgroundColor: colors['main-background'] },
++			]}
++		>
+ 			{props.children}
+ 		</View>
+ 	)
+@@ -20,6 +29,5 @@
+ const styles = StyleSheet.create({
+ 	container: {
+ 		borderRadius: 14,
+-		backgroundColor: 'white',
+ 	},
+ })
+diff -ruN ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx mb/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx	2026-11-01 20:11:37.639781904 +0000
++++ mb/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx	2026-11-01 20:11:37.636849174 +0000
+@@ -11,7 +11,7 @@
+ 	return (
+ 		<View
+ 			style={[
+-				{ shadowColor: colors.shadow, backgroundColor: props.backgroundColor ?? 'white' },
++				{ shadowColor: colors.shadow, backgroundColor: props.backgroundColor ?? colors['main-background'] },
+ 				border.shadow.medium,
+ 				styles.container,
+ 			]}
+diff -ruN ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx mb/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx
+--- ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx	2026-11-01 20:11:37.630196285 +0000
++++ mb/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx	2026-11-01 20:11:37.627079083 +0000
+@@ -1,8 +1,11 @@
+ import React from 'react'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { PackProps, ToggleMenuItemWithIconProps } from '../interfaces'
+ import { FloatingMenuTogglePriv } from './FloatingMenuToggle.priv'
+ 
+ export const FloatingMenuToggleAlt: React.FC<ToggleMenuItemWithIconProps & PackProps> = props => {
+-	return <FloatingMenuTogglePriv {...props} backgroundColor='#F7F8FE' />
++	const colors = useThemeColor()
++	return <FloatingMenuTogglePriv {...props} backgroundColor={colors['input-background']} />
+ }
+diff -ruN ma/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx mb/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx
+--- ma/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx	2026-11-01 20:11:37.596455999 +0000
++++ mb/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx	2026-11-01 20:11:37.593399163 +0000
+@@ -1,15 +1,18 @@
+ import { Icon } from '@ui-kitten/components'
+ import React from 'react'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ import { MenuItemProps } from '../interfaces'
+ import { MenuItemPriv } from '../MenuItem.priv'
+ import { TextPriv } from '../Text.priv'
+ 
+ export const MenuItem = (props: MenuItemProps) => {
++	const colors = useThemeColor()
+ 	return (
+ 		<MenuItemPriv onPress={props.onPress} testID={props.testID}>
+ 			<TextPriv>{props.children}</TextPriv>
+-			<Icon name='arrow-ios-forward' width={20} height={20} fill='#393C63' />
++			<Icon name='arrow-ios-forward' width={20} height={20} fill={colors['main-text']} />
+ 		</MenuItemPriv>
+ 	)
+ }
+diff -ruN ma/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx mb/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx	2026-11-01 20:11:37.607493414 +0000
++++ mb/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx	2026-11-01 20:11:37.604548428 +0000
+@@ -22,7 +22,7 @@
+ 				{props.children}
+ 			</IconWithTextPriv>
+ 			{!props.noRightArrow && (
+-				<Icon name='arrow-ios-forward' width={20} height={20} fill='#393C63' />
++				<Icon name='arrow-ios-forward' width={20} height={20} fill={colors['main-text']} />
+ 			)}
+ 		</MenuItemPriv>
+ 	)
+diff -ruN ma/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx mb/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx
+--- ma/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx	1970-01-01 00:00:00.000000000 +0000
++++ mb/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx	2026-11-01 20:11:37.376118806 +0000
+@@ -0,0 +1,106 @@
++import React from 'react'
++import { Modal, Pressable, StyleSheet, Text, View } from 'react-native'
++
++import { useThemeColor } from '@berty/hooks'
++
++interface ConfirmDialogProps {
++	visible: boolean
++	title: string
++	message: string
++	confirmLabel: string
++	cancelLabel: string
++	onConfirm: () => void
++	onCancel: () => void
++	testID?: string
++}
++
++// Small confirmation dialog that follows the Berty theme (the native Alert does not)
++export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
++	visible,
++	title,
++	message,
++	confirmLabel,
++	cancelLabel,
++	onConfirm,
++	onCancel,
++	testID,
++}) => {
++	const colors = useThemeColor()
++
++	return (
++		<Modal
++			transparent
++			animationType='fade'
++			visible={visible}
++			onRequestClose={onCancel}
++			statusBarTranslucent
++		>
++			<Pressable style={styles.backdrop} onPress={onCancel} testID={testID}>
++				{/* the inner Pressable stops taps on the card from closing the dialog */}
++				<Pressable
++					style={[styles.card, { backgroundColor: colors['main-background'] }]}
++					onPress={() => {}}
++				>
++					<Text style={[styles.title, { color: colors['main-text'] }]}>{title}</Text>
++					<Text style={[styles.message, { color: colors['secondary-text'] }]}>{message}</Text>
++					<View style={styles.buttons}>
++						<Pressable
++							style={[styles.button, { backgroundColor: colors['input-background'] }]}
++							onPress={onCancel}
++						>
++							<Text style={[styles.buttonText, { color: colors['main-text'] }]}>{cancelLabel}</Text>
++						</Pressable>
++						<Pressable
++							style={[styles.button, { backgroundColor: colors['warning-asset'] }]}
++							onPress={onConfirm}
++						>
++							<Text style={[styles.buttonText, { color: colors['reverted-main-text'] }]}>
++								{confirmLabel}
++							</Text>
++						</Pressable>
++					</View>
++				</Pressable>
++			</Pressable>
++		</Modal>
++	)
++}
++
++const styles = StyleSheet.create({
++	backdrop: {
++		flex: 1,
++		backgroundColor: 'rgba(0, 0, 0, 0.5)',
++		justifyContent: 'center',
++		paddingHorizontal: 24,
++	},
++	card: {
++		borderRadius: 20,
++		padding: 24,
++	},
++	title: {
++		fontFamily: 'Open Sans',
++		fontSize: 20,
++		fontWeight: '700',
++		marginBottom: 8,
++	},
++	message: {
++		fontFamily: 'Open Sans',
++		fontSize: 15,
++		lineHeight: 21,
++		marginBottom: 24,
++	},
++	buttons: {
++		flexDirection: 'row',
++		justifyContent: 'flex-end',
++	},
++	button: {
++		borderRadius: 12,
++		paddingVertical: 10,
++		paddingHorizontal: 18,
++		marginLeft: 10,
++	},
++	buttonText: {
++		fontFamily: 'Open Sans',
++		fontSize: 15,
++		fontWeight: '600',
++	},
++})
+diff -ruN ma/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx mb/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx	2026-11-01 20:11:37.387889302 +0000
++++ mb/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx	2026-11-01 20:11:37.384536652 +0000
+@@ -2,12 +2,21 @@
+ import { StyleSheet, View } from 'react-native'
+ 
+ import { useStyles } from '@berty/contexts/styles'
++import { useThemeColor } from '@berty/hooks'
+ 
+ export const CardBodyPriv: React.FC<{}> = props => {
+ 	const { padding } = useStyles()
++	const colors = useThemeColor()
+ 
+ 	return (
+-		<View style={[padding.horizontal.large, padding.bottom.medium, styles.content]}>
++		<View
++			style={[
++				padding.horizontal.large,
++				padding.bottom.medium,
++				styles.content,
++				{ backgroundColor: colors['main-background'] },
++			]}
++		>
+ 			{props.children}
+ 		</View>
+ 	)
+@@ -15,7 +24,6 @@
+ 
+ const styles = StyleSheet.create({
+ 	content: {
+-		backgroundColor: 'white',
+ 		elevation: 7,
+ 		shadowOpacity: 0.1,
+ 		shadowRadius: 40,
+diff -ruN ma/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx mb/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx
+--- ma/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx	2026-11-01 20:11:37.396585930 +0000
++++ mb/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx	2026-11-01 20:11:37.393685735 +0000
+@@ -1,15 +1,21 @@
+ import React from 'react'
+ import { StyleSheet, View } from 'react-native'
+ 
++import { useThemeColor } from '@berty/hooks'
++
+ export const HeaderPictoWrapperPriv: React.FC<{}> = props => {
+-	return <View style={styles.avatar}>{props.children}</View>
++	const colors = useThemeColor()
++	return (
++		<View style={[styles.avatar, { backgroundColor: colors['main-background'] }]}>
++			{props.children}
++		</View>
++	)
+ }
+ 
+ const styles = StyleSheet.create({
+ 	avatar: {
+ 		width: 98,
+ 		height: 98,
+-		backgroundColor: 'white',
+ 		justifyContent: 'center',
+ 		alignItems: 'center',
+ 		position: 'relative',
+diff -ruN ma/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx mb/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx
+--- ma/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx	2026-11-01 20:11:37.790438943 +0000
++++ mb/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx	2026-11-01 20:11:37.787359350 +0000
+@@ -51,7 +51,7 @@
+ 			>
+ 				{header}
+ 			</UnifiedText>
+-			<Card style={[{ backgroundColor: '#F2F2F2', shadowColor: colors.shadow }]}>
++			<Card style={[{ backgroundColor: colors['main-background'], shadowColor: colors.shadow }]}>
+ 				<View style={[padding.medium]}>
+ 					<UnifiedText
+ 						style={[
+diff -ruN ma/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx mb/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx
+--- ma/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx	2026-11-01 20:11:37.416164422 +0000
++++ mb/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx	2026-11-01 20:11:37.413028210 +0000
+@@ -106,7 +106,7 @@
+ 
+ 	return (
+ 		<View
+-			style={[padding.horizontal.large, padding.top.small, { flex: 1, backgroundColor: '#FFFFFF' }]}
++			style={[padding.horizontal.large, padding.top.small, { flex: 1, backgroundColor: colors['main-background'] }]}
+ 		>
+ 			<MediumInput
+ 				value={searchText}
+diff -ruN ma/berty-bridge-expo/mobile/src/contexts/notification.context.tsx mb/berty-bridge-expo/mobile/src/contexts/notification.context.tsx
+--- ma/berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-11-01 20:11:38.005239952 +0000
++++ mb/berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-11-01 20:11:38.002231627 +0000
+@@ -8,7 +8,7 @@
+ import beapi from "@berty/api";
+ import { useNavigation } from "@berty/navigation";
+ import { accountClient } from "@berty/utils/accounts/accountClient";
+-import { navigationRef } from "@berty/navigation/rootRef";
++import { isViewingConversation } from "@berty/utils/notification/viewing";
+ import {
+ 	useConversationsDict,
+ 	useMessengerClient,
+@@ -154,13 +154,7 @@
+ 			const convPK = push.pushData?.conversationPublicKey;
+ 			if (convPK) {
+ 				// Don't notify for the conversation the user is currently viewing.
+-				const currentRoute = navigationRef.current?.getCurrentRoute();
+-				const isViewingConversation =
+-					(currentRoute?.name === "Chat.OneToOne" ||
+-						currentRoute?.name === "Chat.MultiMember") &&
+-					(currentRoute?.params as { convId?: string } | undefined)?.convId ===
+-						convPK;
+-				if (isViewingConversation) {
++				if (isViewingConversation(convPK)) {
+ 					return;
+ 				}
+ 
+diff -ruN ma/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx mb/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx
+--- ma/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx	2026-11-01 20:11:37.987547932 +0000
++++ mb/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx	2026-11-01 20:11:37.984244823 +0000
+@@ -1,28 +1,34 @@
+-import { mapping, light } from "@eva-design/eva";
++import { mapping, light, dark } from "@eva-design/eva";
+ import { ApplicationProvider } from "@ui-kitten/components";
+ import { StatusBar } from "expo-status-bar";
+ import React from "react";
+ 
++import { useIsDarkTheme } from "@berty/hooks";
++
+ interface UIKittenProviderProps {
+ 	children: React.ReactNode;
+ }
+ 
+-export const UIKittenProvider = ({ children }: UIKittenProviderProps) => (
+-	<>
+-		<ApplicationProvider
+-			mapping={mapping}
+-			customMapping={
+-				{
+-					strict: {
+-						"text-font-family": "Open Sans",
+-						"text-paragraph-1-font-weight": "600",
+-					},
+-				} as any
+-			}
+-			theme={light}
+-		>
+-			<StatusBar style="dark" />
+-			{children}
+-		</ApplicationProvider>
+-	</>
+-);
++export const UIKittenProvider = ({ children }: UIKittenProviderProps) => {
++	const isDark = useIsDarkTheme();
++
++	return (
++		<>
++			<ApplicationProvider
++				mapping={mapping}
++				customMapping={
++					{
++						strict: {
++							"text-font-family": "Open Sans",
++							"text-paragraph-1-font-weight": "600",
++						},
++					} as any
++				}
++				theme={isDark ? dark : light}
++			>
++				<StatusBar style={isDark ? "light" : "dark"} />
++				{children}
++			</ApplicationProvider>
++		</>
++	);
++};
+diff -ruN ma/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts mb/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts
+--- ma/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-01 20:11:37.829402976 +0000
++++ mb/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-01 20:11:37.826351302 +0000
+@@ -1,5 +1,10 @@
+ import * as Notifications from 'expo-notifications'
+-import { useEffect } from 'react'
++import { useCallback, useEffect } from 'react'
++import { AppState, Platform } from 'react-native'
++import { GoBridge } from 'berty-bridge-expo'
++
++import beapi from '@berty/api'
++import { selectNodeNetworkConfig } from '@berty/redux/reducers/networkConfig.reducer'
+ 
+ import { useAppDispatch } from '@berty/hooks'
+ import { useNavigation } from '@berty/navigation'
+@@ -10,6 +15,7 @@
+ import { NotificationsInhibitor } from '@berty/utils/notification/notif-in-app'
+ import { Maybe } from '@berty/utils/type/maybe'
+ 
++import { useAppSelector } from './core.hooks'
+ import { useMountEffect } from './react.hooks'
+ 
+ export const useNotificationsInhibitor = (inhibitor: Maybe<NotificationsInhibitor>) => {
+@@ -63,8 +69,50 @@
+ 
+ 		dismiss()
+ 		const unsubscribeFocus = navigation.addListener('focus', dismiss)
++		// Coming back to the app from the recent apps (or from another app) does not focus the
++		// screen again, so also clear the notifications when the app becomes active on this chat.
++		const appStateSubscription = AppState.addEventListener('change', state => {
++			if (state === 'active' && navigation.isFocused()) {
++				dismiss()
++			}
++		})
+ 		return () => {
+ 			unsubscribeFocus()
++			appStateSubscription.remove()
+ 		}
+ 	}, [convPK, navigation])
+ }
++
++const BLUETOOTH_PROMPT_INTERVAL_MS = 2 * 60 * 1000
++let lastBluetoothPrompt = 0
++
++// Android: returns a function that offers to turn Bluetooth on (system dialog) when it is
++// useful, i.e. when Bluetooth is enabled in Berty's network settings, is turned off on the
++// phone and there is no Wi-Fi/mobile/ethernet network (so Bluetooth is the only way to reach
++// the contact). Meant to be called when the user adds a contact (QR) or sends a message.
++// It asks at most once every couple of minutes.
++export const useBluetoothEnablePrompt = () => {
++	const nodeNetworkConfig = useAppSelector(selectNodeNetworkConfig)
++	const bluetoothWanted =
++		nodeNetworkConfig?.bluetoothLe === beapi.account.NetworkConfig.Flag.Enabled
++
++	return useCallback(async () => {
++		if (
++			Platform.OS !== 'android' ||
++			!bluetoothWanted ||
++			Date.now() - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS
++		) {
++			return
++		}
++		try {
++			if ((await GoBridge.isBluetoothEnabled()) || (await GoBridge.hasNetworkConnection())) {
++				return
++			}
++			lastBluetoothPrompt = Date.now()
++			// the system dialog ("Allow Berty to turn on Bluetooth?") explains itself
++			await GoBridge.requestEnableBluetooth()
++		} catch (err) {
++			console.warn('bluetooth state check failed: ', err)
++		}
++	}, [bluetoothWanted])
++}
+diff -ruN ma/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts mb/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts
+--- ma/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts	2026-11-01 20:11:37.838219217 +0000
++++ mb/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts	2026-11-01 20:11:37.835130141 +0000
+@@ -1,21 +1,50 @@
+ import React from 'react'
++import { useColorScheme } from 'react-native'
+ import { useSelector } from 'react-redux'
+ 
+ import darkTheme from '@berty/assets/themes/dark-theme.json'
+ import colors from '@berty/assets/themes/default-theme.json'
+ import {
++	blackThemeColors,
++	nightThemeColors,
+ 	selectThemeCollection,
+ 	selectThemeIsDark,
+ 	selectThemeSelected,
+ 	ThemeType,
+ } from '@berty/redux/reducers/theme.reducer'
++import { useThemeMode } from '@berty/utils/theme/themeMode'
++
++// 'light', 'dark' or 'black': the mode that is really applied (the system setting is resolved)
++export const useEffectiveThemeMode = (): 'light' | 'dark' | 'black' => {
++	const mode = useThemeMode()
++	const systemScheme = useColorScheme()
++
++	if (mode === 'system') {
++		return systemScheme === 'dark' ? 'dark' : 'light'
++	}
++	return mode
++}
++
++export const useIsDarkTheme = (): boolean => {
++	const mode = useEffectiveThemeMode()
++	const legacyIsDark = useSelector(selectThemeIsDark)
++	return mode !== 'light' || legacyIsDark
++}
+ 
+ export const useThemeColor = (): ThemeType => {
++	const mode = useEffectiveThemeMode()
+ 	const themeIsDark = useSelector(selectThemeIsDark)
+ 	const themeSelected = useSelector(selectThemeSelected)
+ 	const themeCollection = useSelector(selectThemeCollection)
+ 
+ 	return React.useMemo(() => {
++		if (mode === 'black') {
++			return blackThemeColors
++		}
++		if (mode === 'dark') {
++			return nightThemeColors
++		}
++
+ 		if (!Object.entries(themeCollection).length) {
+ 			return colors
+ 		}
+@@ -32,5 +61,5 @@
+ 			}
+ 		}
+ 		return collectionColors as ThemeType
+-	}, [themeCollection, themeIsDark, themeSelected])
++	}, [mode, themeCollection, themeIsDark, themeSelected])
+ }
+diff -ruN ma/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json mb/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json
+--- ma/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-01 20:11:38.319380038 +0000
++++ mb/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-01 20:11:38.316327790 +0000
+@@ -153,7 +153,7 @@
+ 	"settings": {
+ 		"home": {
+ 			"title": "Settings",
+-			"proximity-button": "Off-Grid Communication",
++			"proximity-button": "Nearby communication (Bluetooth)",
+ 			"notifications-button": "Notifications",
+ 			"appearance-button": "Appearance",
+ 			"accounts-button": "Accounts",
+@@ -187,6 +187,11 @@
+ 		"appearance": {
+ 			"title": "Appearance",
+ 			"dark-button": "Dark Mode",
++			"theme-title": "Theme",
++			"mode-system": "System default",
++			"mode-light": "Light",
++			"mode-dark": "Dark",
++			"mode-black": "Black (AMOLED)",
+ 			"editor-button": "Theme Editor",
+ 			"theme-editor": {
+ 				"title": "Theme Editor"
+@@ -540,6 +545,18 @@
+ 		"need-restart": {
+ 			"title": "Restart required",
+ 			"desc": "Restart Berty to save your data and enable notifications!"
++		},
++		"background-service": {
++			"title": "Berty is running in the background",
++			"desc": "Keeps Berty connected to receive messages. Touch and hold to hide this notification, or turn it off in Settings.",
++			"setting-title": "Run in the background",
++			"setting-desc": "Keep Berty running to receive messages and notifications when the app is closed"
++		},
++		"quit": {
++			"title": "Quit Berty?",
++			"desc": "Berty will stop running in the background. You won't receive messages or notifications until you open it again.",
++			"cancel": "Cancel",
++			"confirm": "Quit"
+ 		}
+ 	},
+ 	"error": {
+diff -ruN ma/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts mb/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts
+--- ma/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts	2026-11-01 20:11:37.968253679 +0000
++++ mb/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts	2026-11-01 20:11:37.965118799 +0000
+@@ -3,6 +3,8 @@
+ import darkTheme from '@berty/assets/themes/dark-theme.json'
+ import darkLFTheme from '@berty/assets/themes/DarkLF-theme.json'
+ import defaultTheme from '@berty/assets/themes/default-theme.json'
++import blackTheme from '@berty/assets/themes/black-theme.json'
++import nightTheme from '@berty/assets/themes/night-theme.json'
+ import pinkTheme from '@berty/assets/themes/pink-theme.json'
+ import { randomizeThemeColor } from '@berty/contexts/styles'
+ 
+@@ -41,6 +43,9 @@
+ 
+ type ThemeCollectionType = Partial<Record<AVAILABLE_THEMES | string, ThemeDefinition>>
+ 
++export const nightThemeColors: ThemeType = nightTheme
++export const blackThemeColors: ThemeType = blackTheme
++
+ type ThemeState = {
+ 	selected: keyof AVAILABLE_THEMES | string
+ 	collection: ThemeCollectionType
+@@ -152,7 +157,13 @@
+ 	},
+ })
+ 
+-export const { setTheme, randomizeTheme, saveTheme, importTheme, deleteAddedThemes, resetTheme } =
+-	slice.actions
++export const {
++	setTheme,
++	randomizeTheme,
++	saveTheme,
++	importTheme,
++	deleteAddedThemes,
++	resetTheme,
++} = slice.actions
+ 
+ export default makeRoot(slice.reducer)
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx mb/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx	2026-11-01 20:11:38.156965269 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx	2026-11-01 20:11:38.154088541 +0000
+@@ -22,12 +22,12 @@
+ 	const accountContacts = useAllContacts()
+ 
+ 	return (
+-		<View style={[flex.tiny, { backgroundColor: '#FFFFFF', minHeight: '100%' }]}>
++		<View style={[flex.tiny, { backgroundColor: colors['main-background'], minHeight: '100%' }]}>
+ 			<StatusBar backgroundColor={colors['background-header']} barStyle='light-content' />
+ 			<View style={{ backgroundColor: colors['background-header'] }}>
+ 				<CreateGroupMemberList />
+ 			</View>
+-			<View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
++			<View style={{ flex: 1, backgroundColor: colors['main-background'] }}>
+ 				<View style={{ top: -30 * scaleHeight, flex: 1 }}>
+ 					<CreateGroupHeader
+ 						title={t('main.home.create-group.add-members')}
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx mb/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-11-01 20:11:38.143820645 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-11-01 20:11:38.140762826 +0000
+@@ -2,8 +2,10 @@
+ import pickBy from 'lodash/pickBy'
+ import React, { useEffect, useMemo, useRef, useState } from 'react'
+ import { useTranslation } from 'react-i18next'
++import { useFocusEffect } from '@react-navigation/native'
++import { GoBridge } from 'berty-bridge-expo'
+ import { StatusBar } from 'expo-status-bar'
+-import { ScrollView, View } from 'react-native'
++import { BackHandler, Platform, ScrollView, View } from 'react-native'
+ import { useSelector } from 'react-redux'
+ import { SafeAreaView } from 'react-native-safe-area-context'
+ 
+@@ -13,12 +15,14 @@
+ import { useLayout } from '@berty/components/hooks'
+ import { ButtonSettingV2 } from '@berty/components/shared-components'
+ import { UnifiedText } from '@berty/components/shared-components/UnifiedText'
++import { ConfirmDialog } from '@berty/components/modals/ConfirmDialog'
+ import { useStyles } from '@berty/contexts/styles'
+ import {
+ 	useContactsDict,
+ 	useConversationsDict,
+ 	useIncomingContactRequests,
+ 	useAllConversations,
++	useIsDarkTheme,
+ 	useThemeColor,
+ 	useMessengerClient,
+ 	useNotificationsInhibitor,
+@@ -72,8 +76,25 @@
+ 
+ 	const { text, opacity, flex, margin, border } = useStyles()
+ 	const colors = useThemeColor()
++	const isDark = useIsDarkTheme()
+ 	const { t } = useTranslation()
+ 
++	// Android: the back gesture on the home screen asks before quitting, because quitting
++	// also stops the background service and so the delivery of messages and notifications.
++	const [quitDialogVisible, setQuitDialogVisible] = React.useState(false)
++	useFocusEffect(
++		React.useCallback(() => {
++			if (Platform.OS !== 'android') {
++				return
++			}
++			const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
++				setQuitDialogVisible(true)
++				return true
++			})
++			return () => subscription.remove()
++		}, []),
++	)
++
+ 	const scrollRef = useRef<ScrollView>(null)
+ 	const searching = !!searchText
+ 	const lowSearchText = searchText.toLowerCase()
+@@ -204,7 +225,19 @@
+ 
+ 	return (
+ 		<SafeAreaView style={[styleBackground, { flex: 1 }]}>
+-			<StatusBar style={requests.length && !isOnTop ? 'light' : 'dark'} />
++			<StatusBar style={isDark || (requests.length && !isOnTop) ? 'light' : 'dark'} />
++			<ConfirmDialog
++				visible={quitDialogVisible}
++				title={t('notification.quit.title')}
++				message={t('notification.quit.desc')}
++				confirmLabel={t('notification.quit.confirm')}
++				cancelLabel={t('notification.quit.cancel')}
++				onCancel={() => setQuitDialogVisible(false)}
++				onConfirm={() => {
++					setQuitDialogVisible(false)
++					GoBridge.quitApp().catch(err => console.warn('unable to quit the app: ', err))
++				}}
++			/>
+ 			<ScrollView
+ 				ref={scrollRef}
+ 				stickyHeaderIndices={!searchText?.length && !hasResults ? [1] : [0]}
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx mb/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx	2026-11-01 20:11:38.131477284 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx	2026-11-01 20:11:38.128166787 +0000
+@@ -52,7 +52,8 @@
+ 				setIsPressed(true)
+ 			}}
+ 		>
+-			<View style={[row.center, !props.isLast && styles.divider, padding.vertical.scale(7)]}>
++			<View style={[row.center, !props.isLast && styles.divider,
++							!props.isLast && { borderColor: colors['secondary-background'] }, padding.vertical.scale(7)]}>
+ 				{props.children}
+ 			</View>
+ 		</TouchableHighlight>
+@@ -62,6 +63,5 @@
+ const styles = StyleSheet.create({
+ 	divider: {
+ 		borderBottomWidth: 1,
+-		borderColor: '#EDF1F7',
+ 	},
+ })
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx mb/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-11-01 20:11:38.171915115 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-11-01 20:11:38.168907519 +0000
+@@ -88,12 +88,12 @@
+ 	})
+ 
+ 	return (
+-		<Layout style={[flex.tiny, { backgroundColor: '#FFFFFF' }]}>
++		<Layout style={[flex.tiny, { backgroundColor: colors['main-background'] }]}>
+ 			<StatusBar style='light' />
+ 			<SafeAreaView style={{ backgroundColor: colors['background-header'] }}>
+ 				<CreateGroupMemberList />
+ 			</SafeAreaView>
+-			<View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
++			<View style={{ flex: 1, backgroundColor: colors['main-background'] }}>
+ 				<View style={{ top: -30 * scaleHeight, flex: 1 }}>
+ 					<CreateGroupHeader
+ 						title={t('chat.add-members.contacts')}
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx mb/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-11-01 20:11:38.091609427 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-11-01 20:11:38.088414640 +0000
+@@ -15,7 +15,7 @@
+ import { UnifiedText } from '@berty/components/shared-components/UnifiedText'
+ import { useAppDimensions } from '@berty/contexts/app-dimensions.context'
+ import { useStyles } from '@berty/contexts/styles'
+-import { useAccount, useMessengerClient, useThemeColor } from '@berty/hooks'
++import { useAccount, useBluetoothEnablePrompt, useMessengerClient, useThemeColor } from '@berty/hooks'
+ import { ScreenFC, useNavigation } from '@berty/navigation'
+ import { checkPermission } from '@berty/utils/permissions/checkPermissions'
+ import { PermissionType } from '@berty/utils/permissions/permissions'
+@@ -198,6 +198,14 @@
+ 	const { t } = useTranslation()
+ 	const account = useAccount()
+ 	const url = account.link
++	const askToEnableBluetooth = useBluetoothEnablePrompt()
++
++	// adding a contact with a QR code while offline: Bluetooth may be the only way to connect
++	useFocusEffect(
++		useCallback(() => {
++			askToEnableBluetooth()
++		}, [askToEnableBluetooth]),
++	)
+ 
+ 	useFocusEffect(
+ 		useCallback(() => {
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx mb/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx	2026-11-01 20:11:38.307606311 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx	2026-11-01 20:11:38.304582951 +0000
+@@ -6,12 +6,13 @@
+ import { PrimaryButton, SecondaryButton } from '@berty/components'
+ import { UnifiedText } from '@berty/components/shared-components/UnifiedText'
+ import { useStyles } from '@berty/contexts/styles'
+-import { useNotificationsInhibitor, useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useNotificationsInhibitor, useThemeColor } from '@berty/hooks'
+ import { ScreenFC, useNavigation } from '@berty/navigation'
+ import { importAccountFromDocumentPicker } from '@berty/utils/accounts/accountBackup'
+ import * as testIDs from '@berty/utils/testing/testIDs.json'
+ 
+ export const GetStarted: ScreenFC<'Onboarding.GetStarted'> = () => {
++	const isDark = useIsDarkTheme()
+ 	useNotificationsInhibitor(() => true)
+ 	const { margin, padding, text } = useStyles()
+ 	const colors = useThemeColor()
+@@ -25,7 +26,7 @@
+ 				{ backgroundColor: colors['main-background'], flex: 1, justifyContent: 'center' },
+ 			]}
+ 		>
+-			<StatusBar backgroundColor={colors['main-background']} barStyle='dark-content' />
++			<StatusBar backgroundColor={colors['main-background']} barStyle={isDark ? 'light-content' : 'dark-content'} />
+ 			<View style={[margin.bottom.big, { flexDirection: 'row', justifyContent: 'center' }]}>
+ 				<Logo />
+ 			</View>
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx mb/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx	2026-11-01 20:11:38.292221290 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx	2026-11-01 20:11:38.289299468 +0000
+@@ -3,16 +3,17 @@
+ import { StatusBar, View } from 'react-native'
+ 
+ import { WebViews as SharedWebViews } from '@berty/components/shared-components'
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ import { ScreenFC } from '@berty/navigation'
+ 
+ export const WebViews: ScreenFC<'Onboarding.WebViews'> = ({ route: { params } }) => {
++	const isDark = useIsDarkTheme()
+ 	const { url } = params
+ 	const colors = useThemeColor()
+ 
+ 	return (
+ 		<View style={{ backgroundColor: colors['main-background'], minHeight: '100%' }}>
+-			<StatusBar barStyle='dark-content' />
++			<StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
+ 			<SharedWebViews url={url} />
+ 		</View>
+ 	)
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx mb/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx	2026-11-01 20:11:38.204208198 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx	2026-11-01 20:11:38.201088646 +0000
+@@ -1,45 +1,67 @@
++import { Icon } from '@ui-kitten/components'
+ import React from 'react'
+ import { useTranslation } from 'react-i18next'
+-import { ScrollView, View } from 'react-native'
+-// import { useSelector, useDispatch } from 'react-redux'
++import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+ 
+ import { MenuItem, ItemSection } from '@berty/components'
++import { DividerItem } from '@berty/components/items/DividerItem'
+ import { useAppDimensions } from '@berty/contexts/app-dimensions.context'
+ import { useThemeColor } from '@berty/hooks'
+ import { ScreenFC, useNavigation } from '@berty/navigation'
++import { setThemeMode, ThemeMode, useThemeMode } from '@berty/utils/theme/themeMode'
+ import { useTopInset } from '@berty/utils/react-native/useTopInset'
+-// import { selectThemeIsDark, toggleDarkTheme } from '@berty/redux/reducers/theme.reducer'
++
++const MODES: { mode: ThemeMode; label: string }[] = [
++	{ mode: 'system', label: 'settings.appearance.mode-system' },
++	{ mode: 'light', label: 'settings.appearance.mode-light' },
++	{ mode: 'dark', label: 'settings.appearance.mode-dark' },
++	{ mode: 'black', label: 'settings.appearance.mode-black' },
++]
+ 
+ export const Appearance: ScreenFC<'Settings.Appearance'> = () => {
+ 	const { scaleSize } = useAppDimensions()
+ 	const colors = useThemeColor()
+-	// const isDark = useSelector(selectThemeIsDark)
+-	// const dispatch = useDispatch()
+ 	const { navigate } = useNavigation()
+ 	const { t } = useTranslation()
+ 	const topInset = useTopInset()
++	const currentMode = useThemeMode()
+ 
+ 	return (
+-		<View style={{ backgroundColor: colors['secondary-background'], flex: 1, paddingTop: topInset }}>
++		<View
++			style={{
++				backgroundColor: colors['secondary-background'] ?? colors['main-background'],
++				flex: 1,
++				paddingTop: topInset,
++			}}
++		>
+ 			<ScrollView
+ 				bounces={false}
+ 				contentContainerStyle={{ paddingBottom: 12 * scaleSize }}
+ 				showsVerticalScrollIndicator={false}
+ 			>
+ 				<ItemSection>
+-					{/*
+-					<ButtonSettingV2
+-						text={t('settings.appearance.dark-button')}
+-						toggle={{
+-							enable: true,
+-							value: isDark,
+-							action: async () => {
+-								dispatch(toggleDarkTheme())
+-							},
+-						}}
+-					/>
+-					*/}
+-					{/* TODO: replace dark toggle by a menu or a radio button:  Light, Dark, System based*/}
++					{MODES.map(({ mode, label }, index) => (
++						<React.Fragment key={mode}>
++							{index > 0 && <DividerItem />}
++							<TouchableOpacity
++								style={styles.row}
++								onPress={() => setThemeMode(mode)}
++								testID={`theme-mode-${mode}`}
++							>
++								<Text style={[styles.label, { color: colors['main-text'] }]}>{t(label)}</Text>
++								{currentMode === mode && (
++									<Icon
++										name='checkmark-outline'
++										width={22}
++										height={22}
++										fill={colors['background-header']}
++									/>
++								)}
++							</TouchableOpacity>
++						</React.Fragment>
++					))}
++				</ItemSection>
++				<ItemSection>
+ 					<MenuItem onPress={() => navigate('Settings.ThemeEditor')}>
+ 						{t('settings.appearance.editor-button')}
+ 					</MenuItem>
+@@ -48,3 +70,16 @@
+ 		</View>
+ 	)
+ }
++
++const styles = StyleSheet.create({
++	row: {
++		flexDirection: 'row',
++		alignItems: 'center',
++		justifyContent: 'space-between',
++		paddingHorizontal: 16,
++		paddingVertical: 16,
++	},
++	label: {
++		fontSize: 16,
++	},
++})
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx mb/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx	2026-11-01 20:11:38.273521033 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx	2026-11-01 20:11:38.270588503 +0000
+@@ -3,19 +3,20 @@
+ import { View } from 'react-native'
+ 
+ import { WebViews } from '@berty/components/shared-components'
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ import { ScreenFC } from '@berty/navigation'
+ import { useTopInset } from '@berty/utils/react-native/useTopInset'
+ 
+ const CodeLicenseURL = 'https://raw.githubusercontent.com/berty/berty/master/LICENSE-APACHE'
+ 
+ export const CodeLicense: ScreenFC<'Settings.CodeLicense'> = () => {
++	const isDark = useIsDarkTheme()
+ 	const colors = useThemeColor()
+ 	const topInset = useTopInset()
+ 
+ 	return (
+ 		<View style={{ backgroundColor: colors['main-background'], minHeight: '100%', paddingTop: topInset }}>
+-			<StatusBar style='dark' />
++			<StatusBar style={isDark ? 'light' : 'dark'} />
+ 			<WebViews url={CodeLicenseURL} />
+ 		</View>
+ 	)
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx mb/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx	2026-11-01 20:11:38.190455729 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx	2026-11-01 20:11:38.187337380 +0000
+@@ -3,19 +3,20 @@
+ import { View } from 'react-native'
+ 
+ import { WebViews } from '@berty/components/shared-components'
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ import { ScreenFC } from '@berty/navigation'
+ import { useTopInset } from '@berty/utils/react-native/useTopInset'
+ 
+ const FaqURL = 'https://guide.berty.tech/faq'
+ 
+ export const Faq: ScreenFC<'Settings.Faq'> = () => {
++	const isDark = useIsDarkTheme()
+ 	const colors = useThemeColor()
+ 	const topInset = useTopInset()
+ 
+ 	return (
+ 		<View style={{ backgroundColor: colors['main-background'], minHeight: '100%', paddingTop: topInset }}>
+-			<StatusBar style='dark' />
++			<StatusBar style={isDark ? 'light' : 'dark'} />
+ 			<WebViews url={FaqURL} />
+ 		</View>
+ 	)
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx mb/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx	2026-11-01 20:11:38.237779053 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx	2026-11-01 20:11:38.234610451 +0000
+@@ -3,19 +3,20 @@
+ import { View } from 'react-native'
+ 
+ import { WebViews } from '@berty/components/shared-components'
+-import { useThemeColor } from '@berty/hooks'
++import { useIsDarkTheme, useThemeColor } from '@berty/hooks'
+ import { ScreenFC } from '@berty/navigation'
+ import { useTopInset } from '@berty/utils/react-native/useTopInset'
+ 
+ const PrivacyPolicyURL = 'https://berty.tech/privacy-policy#'
+ 
+ export const PrivacyPolicy: ScreenFC<'Settings.PrivacyPolicy'> = () => {
++	const isDark = useIsDarkTheme()
+ 	const colors = useThemeColor()
+ 	const topInset = useTopInset()
+ 
+ 	return (
+ 		<View style={{ backgroundColor: colors['main-background'], minHeight: '100%', paddingTop: topInset }}>
+-			<StatusBar style='dark' />
++			<StatusBar style={isDark ? 'light' : 'dark'} />
+ 			<WebViews url={PrivacyPolicyURL} />
+ 		</View>
+ 	)
+diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx mb/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx
+--- ma/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-11-01 20:11:38.251848671 +0000
++++ mb/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-11-01 20:11:38.248851119 +0000
+@@ -3,6 +3,7 @@
+ import { useTranslation } from 'react-i18next'
+ import { Platform, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native'
+ import { RESULTS } from 'react-native-permissions'
++import { GoBridge } from 'berty-bridge-expo'
+ import { useDispatch, useSelector } from 'react-redux'
+ 
+ import beapi from '@berty/api'
+@@ -167,6 +168,31 @@
+ 		f()
+ 	})
+ 
++	// Android: keep Berty running in the background (foreground service)
++	const [backgroundServiceEnabled, setBackgroundServiceEnabled] = React.useState(true)
++	React.useEffect(() => {
++		if (Platform.OS !== 'android') {
++			return
++		}
++		GoBridge.isBackgroundServiceEnabled()
++			.then(setBackgroundServiceEnabled)
++			.catch(err => console.warn('unable to get the background service setting: ', err))
++	}, [])
++	const onToggleBackgroundService = React.useCallback(async () => {
++		const enabled = !backgroundServiceEnabled
++		setBackgroundServiceEnabled(enabled)
++		try {
++			await GoBridge.setBackgroundServiceEnabled(
++				enabled,
++				t('notification.background-service.title'),
++				t('notification.background-service.desc'),
++			)
++		} catch (err) {
++			console.warn('unable to change the background service setting: ', err)
++			setBackgroundServiceEnabled(!enabled)
++		}
++	}, [backgroundServiceEnabled, t])
++
+ 	const getOffGridCommunicationValue = React.useCallback(() => {
+ 		if (
+ 			blePerm === 'granted' &&
+@@ -268,6 +294,18 @@
+ 								<DividerItem />
+ 							</>
+ 						)}
++						{Platform.OS === 'android' && (
++							<>
++								<MenuToggleWithIcon
++									iconName='smartphone-outline'
++									isToggleOn={backgroundServiceEnabled}
++									onPress={onToggleBackgroundService}
++								>
++									{t('notification.background-service.setting-title')}
++								</MenuToggleWithIcon>
++								<DividerItem />
++							</>
++						)}
+ 						{pushAvailable && (
+ 							<>
+ 								{pushFilteringAvailable ? (
+@@ -312,6 +350,13 @@
+ 							{t('settings.home.accounts-button')}
+ 						</MenuItemWithIcon>
+ 						<DividerItem />
++						<MenuItemWithIcon
++							iconName='color-palette-outline'
++							onPress={() => navigate('Settings.Appearance')}
++						>
++							{t('settings.home.appearance-button')}
++						</MenuItemWithIcon>
++						<DividerItem />
+ 						{networkConfig && (
+ 							<MenuItemWithIcon
+ 								iconName='wifi-outline'
+diff -ruN ma/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts mb/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts
+--- ma/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-11-01 20:11:38.049748092 +0000
++++ mb/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-11-01 20:11:38.046654718 +0000
+@@ -1,5 +1,23 @@
++import { Platform } from 'react-native'
+ import { GoBridge } from 'berty-bridge-expo'
+ 
++import i18n from 'i18next'
++
++// Android only: keep the process alive (and so the node) while the app is in the background
++const startBackgroundService = async () => {
++	if (Platform.OS !== 'android') {
++		return
++	}
++	try {
++		await GoBridge.startBackgroundService(
++			i18n.t('notification.background-service.title'),
++			i18n.t('notification.background-service.desc'),
++		)
++	} catch (err) {
++		console.warn('unable to start the background service: ', err)
++	}
++}
++
+ export const initBridge = async (
+ 	external: boolean,
+ 	address: string,
+@@ -13,12 +31,16 @@
+ 			await GoBridge.initBridgeRemote(fullAddress)
+ 		} else {
+ 			await GoBridge.initBridge()
++			await startBackgroundService()
+ 		}
+ 
+ 		return true
+ 	} catch (err: any) {
+ 		if (err?.message?.indexOf('already instantiated') !== -1) {
+ 			console.log('bridge already started: ', err)
++			if (!external) {
++				await startBackgroundService()
++			}
+ 			return true
+ 		} else {
+ 			console.error('unable to init bridge: ', err)
+diff -ruN ma/berty-bridge-expo/mobile/src/utils/messenger/clients.ts mb/berty-bridge-expo/mobile/src/utils/messenger/clients.ts
+--- ma/berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-11-01 20:11:38.068353137 +0000
++++ mb/berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-11-01 20:11:38.065187601 +0000
+@@ -3,7 +3,6 @@
+ import { Platform } from 'react-native'
+ 
+ import beapi from '@berty/api'
+-import { navigationRef } from '@berty/navigation/rootRef'
+ import { GRPCError, createServiceClient } from '@berty/grpc-bridge'
+ import { logger } from '@berty/grpc-bridge/middleware'
+ import { bridge as rpcBridge, grpcweb as rpcWeb } from '@berty/grpc-bridge/rpc'
+@@ -19,6 +18,7 @@
+ import { setClients, setStreamError, setClearClients } from '@berty/redux/reducers/ui.reducer'
+ import { AppDispatch } from '@berty/redux/store'
+ import { AsyncStorageKeys, NodeInfos, getData } from '@berty/utils/async-storage/async-storage'
++import { isViewingConversation } from '@berty/utils/notification/viewing'
+ import { defaultGlobalPersistentOptions } from '@berty/utils/global-persistent-options/defaults'
+ import { GlobalPersistentOptionsKeys } from '@berty/utils/global-persistent-options/types'
+ import * as Notifications from 'expo-notifications';
+@@ -51,18 +51,6 @@
+ 	}
+ }
+ 
+-// True when the user is currently viewing the given conversation.
+-const isViewingConversation = (convPK: string | undefined): boolean => {
+-	if (!convPK) {
+-		return false
+-	}
+-	const route = navigationRef.current?.getCurrentRoute()
+-	return (
+-		(route?.name === 'Chat.OneToOne' || route?.name === 'Chat.MultiMember') &&
+-		(route?.params as { convId?: string } | undefined)?.convId === convPK
+-	)
+-}
+-
+ const messengerEventStream = (
+ 	messengerClient: WelshMessengerServiceClient,
+ 	dispatch: AppDispatch,
+diff -ruN ma/berty-bridge-expo/mobile/src/utils/notification/viewing.ts mb/berty-bridge-expo/mobile/src/utils/notification/viewing.ts
+--- ma/berty-bridge-expo/mobile/src/utils/notification/viewing.ts	1970-01-01 00:00:00.000000000 +0000
++++ mb/berty-bridge-expo/mobile/src/utils/notification/viewing.ts	2026-11-01 20:11:38.015701585 +0000
+@@ -0,0 +1,29 @@
++import { AppState } from 'react-native'
++
++import { navigationRef } from '@berty/navigation/rootRef'
++
++// True when the user is currently looking at the given conversation.
++//
++// The navigation state alone is not enough: when the app goes to the background
++// (home button, recent apps, another app on top) the conversation screen stays mounted
++// and is still the "current route". Without checking the app state, notifications for
++// the conversation that was open when the app was backgrounded were silently dropped.
++// Shared by Android and iOS.
++export const isViewingConversation = (convPK: string | undefined): boolean => {
++	if (!convPK) {
++		return false
++	}
++
++	// 'background' is the only state in which the screen is certainly not being looked at.
++	// 'inactive' (iOS only: notification shade, app switcher, call banner...) is transient
++	// and the conversation can still be on screen, so it keeps counting as viewing.
++	if (AppState.currentState === 'background') {
++		return false
++	}
++
++	const route = navigationRef.current?.getCurrentRoute()
++	return (
++		(route?.name === 'Chat.OneToOne' || route?.name === 'Chat.MultiMember') &&
++		(route?.params as { convId?: string } | undefined)?.convId === convPK
++	)
++}
+diff -ruN ma/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts mb/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts
+--- ma/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts	1970-01-01 00:00:00.000000000 +0000
++++ mb/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts	2026-11-01 20:11:38.028481127 +0000
+@@ -0,0 +1,57 @@
++import AsyncStorage from '@react-native-async-storage/async-storage'
++import { useSyncExternalStore } from 'react'
++
++// How the app picks its colors:
++// - system: follows the dark/light setting of the phone
++// - light: the regular Berty theme (or the theme picked in the theme editor)
++// - dark: dark theme, not fully black
++// - black: pure black background (saves battery on AMOLED screens)
++export type ThemeMode = 'system' | 'light' | 'dark' | 'black'
++
++const STORAGE_KEY = 'berty-theme-mode'
++const VALID_MODES: ThemeMode[] = ['system', 'light', 'dark', 'black']
++
++// The theme mode is a setting of the device, not of an account: the redux theme state is only
++// loaded once an account is opened, but the screens shown before that (loading, account
++// selection) must already use the chosen theme. So it lives in its own small store.
++let currentMode: ThemeMode = 'light'
++const listeners = new Set<() => void>()
++
++const subscribe = (listener: () => void) => {
++	listeners.add(listener)
++	return () => {
++		listeners.delete(listener)
++	}
++}
++
++const getSnapshot = () => currentMode
++
++const update = (mode: ThemeMode) => {
++	if (mode === currentMode) {
++		return
++	}
++	currentMode = mode
++	listeners.forEach(listener => listener())
++}
++
++export const useThemeMode = (): ThemeMode => useSyncExternalStore(subscribe, getSnapshot)
++
++export const setThemeMode = async (mode: ThemeMode): Promise<void> => {
++	update(mode)
++	try {
++		await AsyncStorage.setItem(STORAGE_KEY, mode)
++	} catch (e) {
++		console.warn('unable to save the theme mode: ', e)
++	}
++}
++
++export const loadThemeMode = async (): Promise<void> => {
++	try {
++		const stored = await AsyncStorage.getItem(STORAGE_KEY)
++		if (stored && (VALID_MODES as string[]).includes(stored)) {
++			update(stored as ThemeMode)
++		}
++	} catch (e) {
++		console.warn('unable to load the theme mode: ', e)
++	}
++}
+diff -ruN ma/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift mb/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift
+--- ma/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-11-01 20:11:37.176570384 +0000
++++ mb/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-11-01 20:11:37.171667862 +0000
+@@ -71,6 +71,7 @@
+         os_log("successfully decrypt push", log: oslogger)
+ 
+         if decrypted.muted {
++            self.contentHandler = nil
+             contentHandler(UNNotificationContent())
+             return
+         }
+@@ -86,6 +87,7 @@
+             self.bestAttemptContent!.subtitle = decrypted.subtitle
+         }
+ 
++        self.contentHandler = nil
+         contentHandler(self.bestAttemptContent!)
+     }
+ 
+@@ -121,7 +123,25 @@
+         return bundle
+     }
+ 
++    // Called when the push cannot be decrypted (keychain not available yet, error, timeout).
++    // Dropping it silently means the user never learns about the message, so display a
++    // generic notification that doesn't leak anything instead.
+     func displayFallback() {
+-        self.contentHandler!(UNNotificationContent())
++        guard let handler = self.contentHandler else {
++            return
++        }
++        self.contentHandler = nil // never deliver twice (didReceive vs serviceExtensionTimeWillExpire)
++
++        guard let content = self.bestAttemptContent else {
++            handler(UNNotificationContent())
++            return
++        }
++
++        if content.title.isEmpty && content.body.isEmpty {
++            let bundle = getLocalizedBundle()
++            content.title = "Berty"
++            content.body = bundle?.localizedString(forKey: "notification.fallback.body", value: "You have a new message", table: nil) ?? "You have a new message"
++        }
++        handler(content)
+     }
+ }
+diff -ruN ma/berty-bridge-expo/plugin/src/index.ts mb/berty-bridge-expo/plugin/src/index.ts
+--- ma/berty-bridge-expo/plugin/src/index.ts	2026-11-01 20:11:37.147326614 +0000
++++ mb/berty-bridge-expo/plugin/src/index.ts	2026-11-01 20:11:37.142364415 +0000
+@@ -9,6 +9,8 @@
+ import withIosTeamId from "./withIosTeamId";
+ import withBridgingHeader from "./withBridgingHeader";
+ import withBertyNotificationService from "./withAndroidNotificationService";
++import withAndroidBackgroundService from "./withAndroidBackgroundService";
++import withAndroidNotificationIcons from "./withAndroidNotificationIcons";
+ 
+ const withConfig: ConfigPlugin = (config) => {
+ 	return withPlugins(config, [
+@@ -20,6 +22,8 @@
+ 		withAndroidMdnsPermissions,
+ 		withBlePermissions,
+ 		withBertyNotificationService,
++		withAndroidBackgroundService,
++		withAndroidNotificationIcons,
+ 	]);
+ };
+ 
+diff -ruN ma/berty-bridge-expo/plugin/src/notificationIconsData.ts mb/berty-bridge-expo/plugin/src/notificationIconsData.ts
+--- ma/berty-bridge-expo/plugin/src/notificationIconsData.ts	1970-01-01 00:00:00.000000000 +0000
++++ mb/berty-bridge-expo/plugin/src/notificationIconsData.ts	2026-11-01 20:11:37.189110682 +0000
+@@ -0,0 +1,31 @@
++// Generated: monochrome (white on transparent) Android status bar icons derived from the Berty logo.
++// "message" is the Berty bird, "service" is the Berty bird inside a ring so that the ongoing
++// background service notification can be told apart from the message notifications.
++const icons = {
++	message: {
++		mdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAACSElEQVR42qWWPWsVURCGn917Ez8wCKJtxI/YCGkEwUKwsRAlbUCtUkQCwUbS2EgqsbAJiI2lnfgH7ATFBAWNIoIY/AALxUYLc829u4+Fs3Cy2XtNyMBhz9mz877vzpmZ3UxlgLWAgm1YXgPLa3sFcB44FfeyLTOo9dGKgTrvP/uottUsRp6sWzHPG7DWEVxQx5P1pQDvqKU6GSDDTUAx8iDdQHAswFbVBfWo+l4t1D+xt5Q4jqqz6iF1Qp1Wx5L9rE5wJcCKAPup9lxvpTqj3le7QTimLidvek/dlZJUBDfiobUG4JSgsmuJ2qUgrPweqSNVuKqsKZMsaQFNuVvEc3eA27Xsa8d8DTgLLMSzeUXQrYHV09EAKoG7kcKngRNAJ/EZCiGXgSNAUTE/aagLGkg7wK8gugl8i3UqpBdEJ4GVPBwXgdcx71e5AjuBkRByEZgB9iX7ObAjrscrxXmwziWhKRvUlxHruZh/Ab4noWsBT2P/MbCcVnJVhVf7ZE1lVRpfT3xeJHvjgyq5ag/T6tdwKAek63N1Tn0W83PhP5y0lA29qB3XxZriunXj+ls93FTBg95g8j/gRRSk6lRDg2wkyJJG9irC0GsA7ibrWwl41q8B1tXPhnMvCUWd6EecE/1adJ2gOpA96udQ33TAH0L1wc2Cq7Qjf3vAFDAa8yzqYx5YAd4C74DVLX9KQ/0B9VMcXhXnhw2K2ptVXj+DiVo4Hqh7A3Co6Uu12ZHFX8Vu4AywH3gJvElahNv5q8j6/LZkSQPblv0FSW6vupmotWYAAAAASUVORK5CYII=",
++		hdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAADz0lEQVR42r2YS4gdRRSGv9t9Z2ZhkEgEiS8SNRAzBCLZiZCFKG5cKGgQFBduVRB1MRLciKiQhRtBQUEEURAXPkAUZSQq6MKFiSQmRrIZgqCjBnGGmbn3fm5O66Hp++jMnRQcuruqq85fp6r+/3R3VFqWEugAg7Cplm6LdzthfbawFC3AGBF5HHgTOBD1xVQRqdlKtat2Ul0nbJv6qv+X91MfpmWjGssAUjmswKyp6+pf6o3xTlHrW6S6ovY8MaCuuqC+pO5M0SnUwwmMai+urzSAH+W4k94dCqiKwB1pOc6rz6rbo+24OlD70T4I+1u9umHZrlX3xv1N6kF1T0MUGwF14+FozHw1AftRfS6c10sVpSej/1Xq0+qHUX826r+M53/URfXRNIGiCVAVvu+iYz8A9JLzJkDVez+rR9Sl1Pa2emcCNKiNcUy9rulQZHRnk6PstOfkZU29rzbrxWjbiLHW4/mUen09UplDekN4qhzHHMBG2MPAe8BsWJ3LSmAmfO0FPgWuSe1TIbVBOPkAeDfYfz1slEJsBKgjMUZRB1Rsgu37wNG4H4TDnRPI1gB4ENgdYxR5SY6nGU9M9BHqFWApCe5TwEngLuDCGDnaBtxeTa6o1g74JDloW1YDSNV3B7AduHzEBE22/7+6dOyvUJdrBDiuDNLp2p10b4d6mzqnflHjrXq/XlADalEEwhL4E3gx5TqTZgH92NR3x1hdYBn4GlhrOKV5FWajvayrfTWzWfVE4o1JozRQf0u8MqvOxJiLKUJVlBbU/eoj6sdxRS3r2tIJBa9Icn1CUNUSf6VeWRtzMQCvxDtnklyNTT8qxrwhJKFNqUD9ot4b+VPWMtUL6qGon0nZQTEqH6q0ZZf6Tmy8QUtQqufUl9XP1F/VN9T5UUqv0hmS5M8Ekx4Avo3nogVzVwdlBbgF+B34IxHpoG2SXyXyLwBzLRP7Iunia8CZ9LXiuBPcFKEyOt0KHLsIWenFRE8BB+PoT6wAxQgWfSbabSEjGwFmCbg/GLydHA3Z0PfEBu1PyEOZhX9Q913sF0k9AS+C7k820H0GUCVuG7WU9nX1ss18HjVF56EhYIYd/dVg20PjEvhJrNrUWVu+B/bFupcN+jMAzgGngW+Aj4ATaU/aYt8NPfZVknUYmI/7MlFAGanp8wHsdNqw+XBs+udDR22KjonAqujMAz/VQBTT/gvSjdn3gMeAmyMXLhPbAjwRYLoJ5Jb/jtkXM55LdeeBBeCtGgNvWclLtgt4ANgTjj8PWx6nP9MGNMkfsz6XqHQbNmldZC8ZGIB/AV0K1RSxQ+U6AAAAAElFTkSuQmCC",
++		xhdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAFRElEQVR42tWZW6gVZRTHfzN7HzMDKaUMujxEkpQRCZ4HSzAUKopeIoLyyaCoMILSgugCPURR1MOxy7NJaUJoGuFDUHLsAhZElpnYBSoLzW7npOfsmX8PrS+W35m9Z2bv8WgLhr2Zme/71n3915pEEg1QAjSyUV1KG9pDTpBppfaAWk+A3N3T/8UCwWVy4HFgL/AxMN+epdMmgaS6VyIplXS2pBEdT8/ZO60+9u3rSgqCOPh00LIizQdXeR9YCnTcun3AMPDXdLlUkalz5x4CWo7x8PukMT9pcRRiaQFwu61LS1ywKJ4GcqFE0pCkdZJG7fcs93zIfpeYu2SScuc+mf3ukzTb9kvc+tRcKy1xi3aFd/67iHx2ReTT30h6UNJcJ+SbxnhHUyncW+WYaUWCIGmWO3OGpNPtHpHASV0BRkyTxyIGv5N0naRLJU1Emo8FyCVtKwjmhZJWSnpd0reS7rX7L0k6YJbbaQq7LBKkVIDEDhuNNJlFguztwbx3pUlJVzmrvm33PN1vz7cW7DEhaYOkeWVZzUt4sWleBUxmqk7h3R2mbU9jkp6RtFTSTDt3o62ZKFDYDxZzwR17CrDALcxLmFNNgTJJ45JuKHCNTZHVw/nBYoedEFPcKa0JA+pUWLkaMQ7cAmwHhqLU3C3NtoEMmAO8BSyx1J42DeZ6MZHadY9jftIYq0ItY3oOsBW4MK4xsQWarJyZ7b8beM2Y6TjBWhWLV2rr5gKrHUqYIkCLZuFwQKpPO1eSq/ITMTMVLLEKuMAp5zgsfwT4qSEME8ycAJ9F8GEhsAXYAMw2QaooA3OlG/291B120B3WlCsdAo5G1l4O3ATcBlzknpdRwGZXFgVxAFNb7MWmXCl1ZwSlHHbPx2okkmDRS4DTwn5pJN1Gc6Wmetw5wAzbL2SezcD1wDLga2BWiSvmUawsAs4IivbaaRnzrxa0iv0GsIDFEQNHgXeA90r6aLmMFRTQccE/JQsFhh8BvrJneQMutBaYGTHbMstQwvwh4HPgF9d3ZC4dT6kDqfnlU106srrMZ8DlwBP2f8hpM+vBvIA/gRXAFRa4K4H1wMP27F/+CgBSQH4PRRC5H8oNB/0t6VaHfNvWICUFWGjCfl+uA6erCNEZQAgZOHusAFVusncmHIA7aOg4dY1Nq6ijK2vtvBCDkLfgLkl3SppvVtgYvbtf0qIq2i8TwG9ws3VL+YDu1Il6gzckrTfNj1o3dmZV5ruNVWIKCPIB4FkLvtYAmSm3qw38ajBZVhPkEkClDNiukM87wHmWDpuA4H79p8B+U0riQFvez2a9Brd3AOe4gwYFeiFNrrY923Yvq5u20wrVdB5wd4VhVVXqmKYfBb50fULjw92g/buAcxsAebJYGgJeBNYZ89lg9uydfc6X9KNrzPsln31GXEFLNOBwt0yAzQUM1J1IhLXjku5rkvluAgTmh21OlNXM/SHfe4vtlLS8zsiw6tUrja4xxJh1iRUP9BRNskOd+B54AXjepe0ODVJcyEJQDQOjfTb6fwAfAK8A7wK/1y1Og3wjk9N+u0vVDVj9N+Bns9Juq6QfGn4/UKCUxpmPLRCq4GJgpwkQf3gIrnIMuAb4xAQY69K/5if6K027gLm1PXw/VM3NwEfG5KRr3v3cZ1ooWCD457U2wmsXMN+x+0fs89IXbt1J+chdFANrCqqj3LD1iA2W9riW8aRSWjDCa1m5T90MMwV2mN/vOlEZZRAXCoF6tU3MljkovR3YZhlmshH8cgLrQPwlvshiOacQtbukvyxyK+o2GqeCBep8uTlp9A8oRhzGLEUrDQAAAABJRU5ErkJggg==",
++		xxhdpi:
++			"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",
++		xxxhdpi:
++			"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",
++	},
++	service: {
++		mdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAACq0lEQVR42r2WvYtXRxSGn9/dD5VFND8UQTsVLBQM6UxcwSYigiCooCLBQiQQ0PwDIRBioV1aCxUVAyGNFoIoLmsjKn6ABNIIFlFREYludnXdfdK8o+PNTZFAMjCce8+c896ZM/O+c3sqHa2XPlv5+sCiPD8DnldjDWD6B22wA3wAmEnwWmAP8DmwCpibmCngV+AicAa428p939S6D8QuVU/7vr1Ux9WT6ePxlXY6OTUGKl3go+rDJF5Wt6gftSaCOj9jlxP7MLkffKQEN7Gfqa/UWfXLDtDBJDct/wF1Rp0IxjvM8tCoS9Tf1Gl1XYLmxB5St+Z5uMoZTkfdoL4JxpISUy/nbJb6hbqgmsnu+G92rIjWRPYn9mwpVQlYk4GreT+W92Pq/axqNjXfp36fFf2s7kjOUOxYctfUe3A0zs1Z2rh/bW9Tgrvqsqy0tG+D01M3xXe0/sA99Xd1JO9XMuPXsaW/UZerC7Mv0+pUANcndyRY91SaMHQlcAuYCD2uVWzuVex+AdwHtgGrQ6xC1l2xE8FaCfSb0H8O8KCi/Q8BG4pcFNnoAxuB48BY/I+A85GOMpkHwVzUdEjFYJJ2Ak8K4SspOAGsAxYAr4GDwFbgm4zTlop+6jhWEaSciK9S3+nY2Wpjv1NXtJjbVCdpSu23N3leFTis3q42dzonSfVGpKIG78XOa28ywAVgPjBa1XsX8HHGh1K6AeDHqOvLlnoOJHc0WBdqNS1EG6s055fM+JV6Tj2sflqxt9ehU51Ea0vFdnVvVeuvW0BNB/jw30lFTy1lWgzcBkaAU8AkcB34KSUqN9ZMxYuSOwNsAC4BT4FPYjvl+g/1RaUxdcxg+j+S664L53G1J1uqE/OvL5z/5cqkI2CtekS9o05WgJPxHUlMVy4qvf/6t+VPpM1JsQeM8nkAAAAASUVORK5CYII=",
++		hdpi:
++			"iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAENklEQVR42s2YT2hdRRTGv/vyXktamjRQY6nRIpYSxFS6sVTBPwsXCi4UXLqVaqpENyIuqhurzU43ARcFxa1UiJSiWdRNFAoKSaEg1dhEGruo9U9i0+S9n5tv4mG89+YFRDNwmbkzZ77zzZkz95y5BaAuSyGpR9KaNleaktqSulJUdEmox6CpDEs6ImlE0p2S+tz/m6R5STOSvpZ0qQajvAB1TwMo3N4NHAe+Am6xcbll2eOeK2M16nTWkekJIKPAXInSP4ErwEU/V9yXlzljFBl214TShP3AVAb+EzABPA0cAHZaUeH2AY9NWDaWKWNWkqoj8xCwEMCuAmPAng22OT57POdqwFkwdimpKjJHgaUAcgbYF+RawReKUCcf6QGaQX6fMVJZso5/kCpz4CFgEeh48niQaQaAJrA9ECmzUJERO2XMjnUM5Y6eW6cBnA8rGa+wyt3AN8CnYTHK2o2snRYyHvDPZ2PKt+pYEJ50305gV+YX34Wjfcig22o+HY3MWpNBz7HIIe59n52vDVwD9lrwAx/nFw34roGWXX+UEbgX6AWGvSVlxG6zjrZ19iUeCqxHA+tX3DfgvU7lgoE6BgP4HTgMvApcAr7wll732BngvkAq6RsLuKPJL6OFLljRzyZSeLVY+WrNVzlZ64QVDgK/hvHrwINhawqg37o61r1uIQEHQziYCGYeDqDJKp2MTCL6Tpg3ANyw7EogdZcVtyw3EXzxIKCGQ9pRSS23zzqyS9JqFhAbYUyO4E1JS5Le9/ghSXc4KyiMuyppQNLLnpNwzhqnZQ7rhEZcrzhSp0lzki76vVMTo39xpO9I+ljSs5JuZMRXJT1s3DX3zVjnOodEaL/ra5IWs3ThtFdTR6hfUq/nPCnpQ1skkdlmKxyWtDtYfdE61zkkQjGfWXY7mXxC0qwB10qStrakXZLG3J43TmH5hqTXJb1p6/0Rtn3Zsn9zsHOds3PNZp/99KW9B7gcThwlzt4GXrJ8L3DT459UhJTUnrXcuejUkeWOYIGOV3hZ0uOSPi/ZvsIyDUnvOVN8TdK0pJOSnrPjt8KOpLIj2x01/fKj60FJeyV9b0XJmVvuS8Sq/GlF0gOSFiQ9tkF+jnUNRg6J8Yzr7fb2Ioz1+ISMSHo+nMC8rHr+vKQXwpEvSmTTsR/xnHUOCXjagJL0RMUN4S3Ld8LpaYcj3JL0g6SnfHIKY1bdIrCutJjp5NRloaM/+6I+Ehy6UxI62sBp4PaSdKTMoWtDR1lwHXNfSimmsjBx01H6S+Bt4P6SfKjq6Tq4VqUfj7pvJRzvI1mOlF+ZNrpW1aYfVQnaZ+77NtueN0pS1EYXCX/XCVpdCnsKOOk8ZxJ4Jkshur19bDqFrUvyT1TcTLRJq2w6yd/oGjRUcvtoBB/8169BW/KiuCWv0lvyZ8P/9jtmy/2w6pbQf/ZL7y/FEL44rmodHAAAAABJRU5ErkJggg==",
++		xhdpi:
++			"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",
++		xxhdpi:
++			"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",
++		xxxhdpi:
++			"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",
++	},
++} as const;
++
++export default icons;
+diff -ruN ma/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts mb/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts
+--- ma/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts	1970-01-01 00:00:00.000000000 +0000
++++ mb/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts	2026-11-01 20:11:37.131722593 +0000
+@@ -0,0 +1,45 @@
++import {
++	AndroidConfig,
++	type ConfigPlugin,
++	withAndroidManifest,
++} from "@expo/config-plugins";
++
++const SERVICE_NAME = "tech.berty.bertybridgeexpo.service.BackgroundService";
++
++// Declares the foreground service that keeps Berty running in the background,
++// the same way Briar does (foreground service of type connectedDevice).
++const withAndroidBackgroundService: ConfigPlugin = (config) => {
++	config = AndroidConfig.Permissions.withPermissions(config, [
++		"android.permission.FOREGROUND_SERVICE",
++		"android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE", // since Android SDK 34
++	]);
++
++	return withAndroidManifest(config, (config) => {
++		const application = config.modResults.manifest.application?.[0];
++		if (!application) {
++			return config;
++		}
++
++		if (!application.service) {
++			application.service = [];
++		}
++
++		const alreadyExists = application.service.some(
++			(service: any) => service.$["android:name"] === SERVICE_NAME
++		);
++
++		if (!alreadyExists) {
++			application.service.push({
++				$: {
++					"android:name": SERVICE_NAME,
++					"android:exported": "false",
++					"android:foregroundServiceType": "connectedDevice",
++				},
++			});
++		}
++
++		return config;
++	});
++};
++
++export default withAndroidBackgroundService;
+diff -ruN ma/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts mb/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts
+--- ma/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts	1970-01-01 00:00:00.000000000 +0000
++++ mb/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts	2026-11-01 20:11:37.158007119 +0000
+@@ -0,0 +1,41 @@
++import { type ConfigPlugin, withDangerousMod } from "@expo/config-plugins";
++import * as fs from "fs";
++import * as path from "path";
++
++import icons from "./notificationIconsData";
++
++// Writes the status bar icons used by the native notifications (messages and
++// background service) in the generated android/app/src/main/res/drawable-*dpi folders.
++const FILES = {
++	message: "ic_stat_berty.png",
++	service: "ic_stat_berty_service.png",
++} as const;
++
++const withAndroidNotificationIcons: ConfigPlugin = (config) =>
++	withDangerousMod(config, [
++		"android",
++		async (config) => {
++			const resDir = path.join(
++				config.modRequest.platformProjectRoot,
++				"app",
++				"src",
++				"main",
++				"res"
++			);
++
++			for (const kind of Object.keys(FILES) as (keyof typeof FILES)[]) {
++				for (const [density, base64] of Object.entries(icons[kind])) {
++					const dir = path.join(resDir, `drawable-${density}`);
++					fs.mkdirSync(dir, { recursive: true });
++					fs.writeFileSync(
++						path.join(dir, FILES[kind]),
++						Buffer.from(base64, "base64")
++					);
++				}
++			}
++
++			return config;
++		},
++	]);
++
++export default withAndroidNotificationIcons;
+diff -ruN ma/berty-bridge-expo/src/BertyBridgeExpoModule.ts mb/berty-bridge-expo/src/BertyBridgeExpoModule.ts
+--- ma/berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-11-01 20:11:37.096308581 +0000
++++ mb/berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-11-01 20:11:37.090875960 +0000
+@@ -23,6 +23,14 @@
+ 	invokeBridgeMethod(method: string, b64message: string): Promise<string>;
+ 	connectService(serviceName: string, address: string): Promise<void>;
+ 	requestPushToken(): Promise<string>;
++	startBackgroundService(title: string, text: string): Promise<void>;
++	stopBackgroundService(): Promise<void>;
++	isBackgroundServiceEnabled(): Promise<boolean>;
++	setBackgroundServiceEnabled(enabled: boolean, title: string, text: string): Promise<void>;
++	quitApp(): Promise<void>;
++	isBluetoothEnabled(): Promise<boolean>;
++	hasNetworkConnection(): Promise<boolean>;
++	requestEnableBluetooth(): Promise<boolean>;
+ }
+ 
+ // This call loads the native module object from the JSI.
+diff -ruN ma/berty-bridge-expo/src/GoBridge.ts mb/berty-bridge-expo/src/GoBridge.ts
+--- ma/berty-bridge-expo/src/GoBridge.ts	2026-11-01 20:11:37.114008487 +0000
++++ mb/berty-bridge-expo/src/GoBridge.ts	2026-11-01 20:11:37.109026424 +0000
+@@ -21,6 +21,14 @@
+ 	invokeBridgeMethod(method: string, b64message: string): Promise<string>;
+ 	connectService(serviceName: string, address: string): Promise<void>;
+ 	requestPushToken(): Promise<string>;
++	startBackgroundService(title: string, text: string): Promise<void>;
++	stopBackgroundService(): Promise<void>;
++	isBackgroundServiceEnabled(): Promise<boolean>;
++	setBackgroundServiceEnabled(enabled: boolean, title: string, text: string): Promise<void>;
++	quitApp(): Promise<void>;
++	isBluetoothEnabled(): Promise<boolean>;
++	hasNetworkConnection(): Promise<boolean>;
++	requestEnableBluetooth(): Promise<boolean>;
+ }
+ 
+ class GoBridge implements GoBridgeInterface {
+@@ -55,6 +63,38 @@
+ 	requestPushToken(): Promise<string> {
+ 		return BertyBridgeExpoModule.requestPushToken();
+ 	}
++
++	startBackgroundService(title: string, text: string): Promise<void> {
++		return BertyBridgeExpoModule.startBackgroundService(title, text);
++	}
++
++	stopBackgroundService(): Promise<void> {
++		return BertyBridgeExpoModule.stopBackgroundService();
++	}
++
++	isBackgroundServiceEnabled(): Promise<boolean> {
++		return BertyBridgeExpoModule.isBackgroundServiceEnabled();
++	}
++
++	setBackgroundServiceEnabled(enabled: boolean, title: string, text: string): Promise<void> {
++		return BertyBridgeExpoModule.setBackgroundServiceEnabled(enabled, title, text);
++	}
++
++	quitApp(): Promise<void> {
++		return BertyBridgeExpoModule.quitApp();
++	}
++
++	hasNetworkConnection(): Promise<boolean> {
++		return BertyBridgeExpoModule.hasNetworkConnection();
++	}
++
++	isBluetoothEnabled(): Promise<boolean> {
++		return BertyBridgeExpoModule.isBluetoothEnabled();
++	}
++
++	requestEnableBluetooth(): Promise<boolean> {
++		return BertyBridgeExpoModule.requestEnableBluetooth();
++	}
+ }
+ 
+ const goBridge: GoBridgeInterface = new GoBridge();
+diff -ruN ma/go/internal/messengerpayloads/handlers.go mb/go/internal/messengerpayloads/handlers.go
+--- ma/go/internal/messengerpayloads/handlers.go	2026-11-01 20:11:36.963239391 +0000
++++ mb/go/internal/messengerpayloads/handlers.go	2026-11-01 20:11:36.960311558 +0000
+@@ -500,11 +500,13 @@
+ 	)
+ 
+ 	// update db
++	alreadyReceived := false
+ 	if err := h.db.TX(h.ctx, func(tx *messengerdb.DBWrapper) error {
+ 		var err error
+ 
+ 		contact, err = tx.AddContactRequestIncomingReceived(contactPK, m.GetDisplayName(), groupPKBytes)
+ 		if errors.Is(err, errcode.ErrCode_ErrDBEntryAlreadyExists) {
++			alreadyReceived = true
+ 			return nil
+ 		} else if err != nil {
+ 			return errcode.ErrCode_ErrDBAddContactRequestIncomingReceived.Wrap(err)
+@@ -524,6 +526,12 @@
+ 		return err
+ 	}
+ 
++	// The metadata events are processed again each time the node starts: if this request has
++	// already been handled (and so already notified), do not notify the user a second time.
++	if alreadyReceived {
++		return nil
++	}
++
+ 	if err := h.dispatcher.StreamEvent(mt.StreamEvent_TypeContactUpdated, &mt.StreamEvent_ContactUpdated{Contact: contact}, true); err != nil {
+ 		return err
+ 	}

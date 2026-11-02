@@ -1,5 +1,10 @@
 import * as Notifications from 'expo-notifications'
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
+import { AppState, Platform } from 'react-native'
+import { GoBridge } from 'berty-bridge-expo'
+
+import beapi from '@berty/api'
+import { selectNodeNetworkConfig } from '@berty/redux/reducers/networkConfig.reducer'
 
 import { useAppDispatch } from '@berty/hooks'
 import { useNavigation } from '@berty/navigation'
@@ -10,6 +15,7 @@ import {
 import { NotificationsInhibitor } from '@berty/utils/notification/notif-in-app'
 import { Maybe } from '@berty/utils/type/maybe'
 
+import { useAppSelector } from './core.hooks'
 import { useMountEffect } from './react.hooks'
 
 export const useNotificationsInhibitor = (inhibitor: Maybe<NotificationsInhibitor>) => {
@@ -63,8 +69,50 @@ export const useDismissNotificationsEffect = (convPK: Maybe<string>) => {
 
 		dismiss()
 		const unsubscribeFocus = navigation.addListener('focus', dismiss)
+		// Coming back to the app from the recent apps (or from another app) does not focus the
+		// screen again, so also clear the notifications when the app becomes active on this chat.
+		const appStateSubscription = AppState.addEventListener('change', state => {
+			if (state === 'active' && navigation.isFocused()) {
+				dismiss()
+			}
+		})
 		return () => {
 			unsubscribeFocus()
+			appStateSubscription.remove()
 		}
 	}, [convPK, navigation])
+}
+
+const BLUETOOTH_PROMPT_INTERVAL_MS = 2 * 60 * 1000
+let lastBluetoothPrompt = 0
+
+// Android: returns a function that offers to turn Bluetooth on (system dialog) when it is
+// useful, i.e. when Bluetooth is enabled in Berty's network settings, is turned off on the
+// phone and there is no Wi-Fi/mobile/ethernet network (so Bluetooth is the only way to reach
+// the contact). Meant to be called when the user adds a contact (QR) or sends a message.
+// It asks at most once every couple of minutes.
+export const useBluetoothEnablePrompt = () => {
+	const nodeNetworkConfig = useAppSelector(selectNodeNetworkConfig)
+	const bluetoothWanted =
+		nodeNetworkConfig?.bluetoothLe === beapi.account.NetworkConfig.Flag.Enabled
+
+	return useCallback(async () => {
+		if (
+			Platform.OS !== 'android' ||
+			!bluetoothWanted ||
+			Date.now() - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS
+		) {
+			return
+		}
+		try {
+			if ((await GoBridge.isBluetoothEnabled()) || (await GoBridge.hasNetworkConnection())) {
+				return
+			}
+			lastBluetoothPrompt = Date.now()
+			// the system dialog ("Allow Berty to turn on Bluetooth?") explains itself
+			await GoBridge.requestEnableBluetooth()
+		} catch (err) {
+			console.warn('bluetooth state check failed: ', err)
+		}
+	}, [bluetoothWanted])
 }
