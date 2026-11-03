@@ -51,7 +51,15 @@ jobs:
       # installs the node modules of berty-bridge-expo
       - name: Build gobridge.aar
         working-directory: berty-bridge-expo
-        run: make android.gomobile
+        # gomobile runs 'go mod tidy' in a fresh module and asks sum.golang.org for every module,
+        # which sometimes fails with a network error ("stream error ... INTERNAL_ERROR"): retry
+        run: |
+          for attempt in 1 2 3; do
+            make android.gomobile && exit 0
+            echo "make android.gomobile failed (attempt $attempt of 3), retrying in 20 s"
+            sleep 20
+          done
+          exit 1
 
       - name: Install app dependencies
         working-directory: berty-bridge-expo/mobile
