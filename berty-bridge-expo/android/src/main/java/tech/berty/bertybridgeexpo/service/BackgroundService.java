@@ -97,9 +97,14 @@ public class BackgroundService extends Service {
             contentIntent = PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE);
         }
 
+        String contentTitle = title != null ? title : "Berty";
+        String contentText = text != null ? text : "Running in the background";
+
         return new NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID_SERVICE)
-            .setContentTitle(title != null ? title : "Berty")
-            .setContentText(text != null ? text : "Running in the background")
+            .setContentTitle(contentTitle)
+            .setContentText(contentText)
+            // expandable: without it the text is cut to one line and can't be read in full
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(contentText))
             .setSmallIcon(NotificationHelper.getSmallIcon(this, NotificationHelper.ICON_SERVICE))
             .setCategory(Notification.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)

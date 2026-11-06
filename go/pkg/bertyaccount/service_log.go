@@ -99,6 +99,9 @@ func (s *service) StreamLogfile(req *accounttypes.StreamLogfile_Request, server 
 
 	// stream log file
 	scanner := bufio.NewScanner(file)
+	// the default limit is 64KB per line: a longer line (e.g. a big JSON log entry)
+	// silently stopped the export
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		err := server.Send(&accounttypes.StreamLogfile_Reply{
 			Line: scanner.Text(),
@@ -111,6 +114,9 @@ func (s *service) StreamLogfile(req *accounttypes.StreamLogfile_Request, server 
 		default:
 			return errcode.ErrCode_TODO.Wrap(err)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return errcode.ErrCode_TODO.Wrap(err)
 	}
 	return nil
 }

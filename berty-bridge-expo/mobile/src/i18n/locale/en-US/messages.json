@@ -548,7 +548,7 @@
 		},
 		"background-service": {
 			"title": "Berty is running in the background",
-			"desc": "Keeps Berty connected to receive messages. Touch and hold to hide this notification, or turn it off in Settings.",
+			"desc": "Berty keeps running to receive your messages. Touch and hold this notification to hide it.",
 			"setting-title": "Run in the background",
 			"setting-desc": "Keep Berty running to receive messages and notifications when the app is closed"
 		},

@@ -1,6 +1,109 @@
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-11-01 20:11:37.266930167 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-11-01 20:11:37.263832686 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/.github/workflows/berty-manual-build.yml ./.github/workflows/berty-manual-build.yml
+--- ../base/berty-2.471.14/.github/workflows/berty-manual-build.yml	1970-01-01 00:00:00.000000000 +0000
++++ ./.github/workflows/berty-manual-build.yml	2026-11-04 19:27:05.968473644 +0000
+@@ -0,0 +1,99 @@
++name: Berty Manual Build
++
++on:
++  workflow_dispatch:
++    inputs:
++      app_env:
++        description: "APP_ENV (preview = 'Berty Staff', installs next to the Play Store version)"
++        type: choice
++        options:
++          - preview
++          - development
++          - production
++        default: preview
++
++jobs:
++  build:
++    name: Build Android APK
++    runs-on: ubuntu-latest
++    timeout-minutes: 90
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++        with:
++          fetch-depth: 0 # gomobile build embeds the version computed from git history
++
++      - name: Free disk space
++        run: |
++          # keep /usr/local/lib/android (SDK/NDK), the build needs it
++          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /usr/share/swift
++          df -h /
++
++      - name: Setup Go (version from go.mod)
++        uses: actions/setup-go@v5
++        with:
++          go-version-file: go.mod
++          cache: true
++
++      - name: Setup Node.js
++        uses: actions/setup-node@v4
++        with:
++          node-version: 22.12.0 # same as .tool-versions, some deps require >= 20
++
++      - name: Setup Java
++        uses: actions/setup-java@v4
++        with:
++          distribution: temurin
++          java-version: 17
++
++      # Same Makefile target as the official android.yml workflow: builds
++      # berty-bridge-expo/android/libs/gobridge.aar (Go node + BLE glue) and
++      # installs the node modules of berty-bridge-expo
++      - name: Build gobridge.aar
++        working-directory: berty-bridge-expo
++        # gomobile runs 'go mod tidy' in a fresh module and asks sum.golang.org for every module,
++        # which sometimes fails with a network error ("stream error ... INTERNAL_ERROR"): retry
++        run: |
++          for attempt in 1 2 3; do
++            # last attempt: skip the checksum database lookups (only for this test build),
++            # the only thing that failed so far was the network call to sum.golang.org
++            if [ "$attempt" = "3" ]; then export GOSUMDB=off; fi
++            make android.gomobile && exit 0
++            echo "make android.gomobile failed (attempt $attempt of 3), retrying in 20 s"
++            sleep 20
++          done
++          exit 1
++
++      - name: Install app dependencies
++        working-directory: berty-bridge-expo/mobile
++        run: npm install
++
++      # The android/ project is not committed, it is generated here (this also runs
++      # the config plugins, including the manifest plugins of berty-bridge-expo)
++      - name: Expo prebuild
++        working-directory: berty-bridge-expo/mobile
++        env:
++          APP_ENV: ${{ inputs.app_env }}
++          CI: "1"
++        run: npx expo prebuild --platform android --no-install
++
++      - name: Build APK
++        working-directory: berty-bridge-expo/mobile/android
++        env:
++          APP_ENV: ${{ inputs.app_env }}
++          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
++        run: |
++          chmod +x gradlew
++          # gomobile only builds arm64 and amd64, so only build arm64 (real phones)
++          # ':app:' matters: a bare 'assembleRelease' also builds every library module as a
++          # standalone AAR, which fails for berty-bridge-expo (it embeds libs/gobridge.aar)
++          ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --stacktrace
++
++      # The Expo template signs release builds with the debug keystore, which is fine
++      # for testing but not for publishing
++      - name: Upload APK
++        uses: actions/upload-artifact@v4
++        with:
++          name: berty-${{ inputs.app_env }}-apk
++          path: berty-bridge-expo/mobile/android/app/build/outputs/apk/release/*.apk
++          if-no-files-found: error
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-11-01 20:11:37.000000000 +0000
 @@ -1,11 +1,17 @@
  package tech.berty.bertybridgeexpo
  
@@ -136,9 +239,9 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
                  promise.resolve(true)
              } catch (err: CodedException) {
                  promise.reject(err)
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-11-01 20:11:37.346912722 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-11-01 20:11:37.343882655 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-11-01 20:11:37.000000000 +0000
 @@ -7,14 +7,14 @@
  
  class LifecycleListener : ReactActivityLifecycleListener {
@@ -156,9 +259,9 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
  
          state = AppState.FOREGROUND
          Log.i(TAG, "onResume")
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-11-01 20:11:37.316061840 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-11-01 20:11:37.312932819 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/BleDriver.java	2026-11-01 20:11:37.000000000 +0000
 @@ -14,6 +14,9 @@
  import android.os.Looper;
  
@@ -298,9 +401,9 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
                  return mGattServer.writeAndNotify(peerDevice, payload);
              } else {
                  mLogger.e(TAG, "SendToPeer error: remote device is disconnected");
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java	2026-11-01 20:11:37.284060621 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java	2026-11-01 20:11:37.280672974 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/DeviceManager.java	2026-11-01 20:11:37.000000000 +0000
 @@ -87,6 +87,16 @@
          }
      }
@@ -318,9 +421,9 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
      public synchronized void remove(String macAddress) {
          mLogger.d(TAG, String.format("remove called: device=%s", mLogger.sensitiveObject(macAddress)));
  
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-11-01 20:11:37.306118153 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-11-01 20:11:37.302958011 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-11-01 20:11:37.000000000 +0000
 @@ -463,6 +463,28 @@
          }
      }
@@ -350,9 +453,9 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
      public void closeClient() {
          mLogger.d(TAG, String.format("closeClient called: device=%s", mLogger.sensitiveObject(getMACAddress())));
  
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-11-01 20:11:37.296920803 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-11-01 20:11:37.293856171 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-11-01 20:11:37.000000000 +0000
 @@ -1,6 +1,8 @@
  package tech.berty.bertybridgeexpo.gobridge.bledriver;
  
@@ -382,9 +485,9 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
      public synchronized Peer get(String peerID) {
          return mPeers.get(peerID);
      }
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-11-01 20:11:37.327917283 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-11-01 20:11:37.324831172 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-11-01 20:11:37.000000000 +0000
 @@ -176,6 +176,18 @@
              return;
          }
@@ -420,9 +523,9 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
      }
  
      // Return the status of the scanner
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-11-01 20:11:37.246681314 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-11-01 20:11:37.242881432 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-11-01 20:11:37.000000000 +0000
 @@ -13,9 +13,21 @@
  public class NotificationHelper extends ContextWrapper {
      public static final String CHANNEL_ID_MESSAGE = "tech.berty.notification.message";
@@ -462,9 +565,9 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
      }
  
      public NotificationManager getManager() {
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java	2026-11-01 20:11:37.256827527 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java	2026-11-01 20:11:37.253732024 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationService.java	2026-11-01 20:11:37.000000000 +0000
 @@ -83,7 +83,7 @@
          NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID_MESSAGE)
              .setContentTitle(fpush.getTitle())
@@ -474,10 +577,10 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
              .setCategory(Notification.CATEGORY_MESSAGE)
              .setGroup(fpush.getConversationIdentifier())
              .setVibrate(new long[]{125L, 75L, 125L})
-diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java
---- ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java	1970-01-01 00:00:00.000000000 +0000
-+++ mb/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java	2026-11-01 20:11:37.338127656 +0000
-@@ -0,0 +1,117 @@
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java
+--- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java	1970-01-01 00:00:00.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/service/BackgroundService.java	2026-11-04 19:24:28.733262495 +0000
+@@ -0,0 +1,122 @@
 +package tech.berty.bertybridgeexpo.service;
 +
 +import android.app.Notification;
@@ -577,9 +680,14 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
 +            contentIntent = PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE);
 +        }
 +
++        String contentTitle = title != null ? title : "Berty";
++        String contentText = text != null ? text : "Running in the background";
++
 +        return new NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID_SERVICE)
-+            .setContentTitle(title != null ? title : "Berty")
-+            .setContentText(text != null ? text : "Running in the background")
++            .setContentTitle(contentTitle)
++            .setContentText(contentText)
++            // expandable: without it the text is cut to one line and can't be read in full
++            .setStyle(new NotificationCompat.BigTextStyle().bigText(contentText))
 +            .setSmallIcon(NotificationHelper.getSmallIcon(this, NotificationHelper.ICON_SERVICE))
 +            .setCategory(Notification.CATEGORY_SERVICE)
 +            .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -595,9 +703,9 @@ diff -ruN ma/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/
 +        return null;
 +    }
 +}
-diff -ruN ma/berty-bridge-expo/mobile/App.tsx mb/berty-bridge-expo/mobile/App.tsx
---- ma/berty-bridge-expo/mobile/App.tsx	2026-11-01 20:11:38.357573265 +0000
-+++ mb/berty-bridge-expo/mobile/App.tsx	2026-11-01 20:11:38.354699316 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/App.tsx ./berty-bridge-expo/mobile/App.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/App.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/App.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -1,4 +1,4 @@
 -import { NavigationContainer } from "@react-navigation/native";
 +import { DefaultTheme, NavigationContainer } from "@react-navigation/native";
@@ -677,9 +785,9 @@ diff -ruN ma/berty-bridge-expo/mobile/App.tsx mb/berty-bridge-expo/mobile/App.ts
  					</ErrorScreen>
  				</Background>
  			</UIKittenProvider>
-diff -ruN ma/berty-bridge-expo/mobile/app.config.ts mb/berty-bridge-expo/mobile/app.config.ts
---- ma/berty-bridge-expo/mobile/app.config.ts	2026-11-01 20:11:38.378153071 +0000
-+++ mb/berty-bridge-expo/mobile/app.config.ts	2026-11-01 20:11:38.375217589 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/app.config.ts ./berty-bridge-expo/mobile/app.config.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/app.config.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/app.config.ts	2026-11-01 20:11:38.000000000 +0000
 @@ -126,6 +126,11 @@
  				{
  					backgroundColor: "#FFFFFF",
@@ -692,9 +800,9 @@ diff -ruN ma/berty-bridge-expo/mobile/app.config.ts mb/berty-bridge-expo/mobile/
  				},
  			],
  			"expo-audio",
-diff -ruN ma/berty-bridge-expo/mobile/src/assets/themes/black-theme.json mb/berty-bridge-expo/mobile/src/assets/themes/black-theme.json
---- ma/berty-bridge-expo/mobile/src/assets/themes/black-theme.json	1970-01-01 00:00:00.000000000 +0000
-+++ mb/berty-bridge-expo/mobile/src/assets/themes/black-theme.json	2026-11-01 20:11:37.921589508 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/assets/themes/black-theme.json ./berty-bridge-expo/mobile/src/assets/themes/black-theme.json
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/assets/themes/black-theme.json	1970-01-01 00:00:00.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/assets/themes/black-theme.json	2026-11-01 20:11:37.000000000 +0000
 @@ -0,0 +1,15 @@
 +{
 +	"main-text": "#F2F2F7",
@@ -711,9 +819,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/assets/themes/black-theme.json mb/bert
 +	"input-background": "#17171F",
 +	"shadow": "#000000"
 +}
-diff -ruN ma/berty-bridge-expo/mobile/src/assets/themes/night-theme.json mb/berty-bridge-expo/mobile/src/assets/themes/night-theme.json
---- ma/berty-bridge-expo/mobile/src/assets/themes/night-theme.json	1970-01-01 00:00:00.000000000 +0000
-+++ mb/berty-bridge-expo/mobile/src/assets/themes/night-theme.json	2026-11-01 20:11:37.915069471 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/assets/themes/night-theme.json ./berty-bridge-expo/mobile/src/assets/themes/night-theme.json
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/assets/themes/night-theme.json	1970-01-01 00:00:00.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/assets/themes/night-theme.json	2026-11-01 20:11:37.000000000 +0000
 @@ -0,0 +1,15 @@
 +{
 +	"main-text": "#ECEDF7",
@@ -730,9 +838,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/assets/themes/night-theme.json mb/bert
 +	"input-background": "#31344F",
 +	"shadow": "#000000"
 +}
-diff -ruN ma/berty-bridge-expo/mobile/src/components/LoaderDots.tsx mb/berty-bridge-expo/mobile/src/components/LoaderDots.tsx
---- ma/berty-bridge-expo/mobile/src/components/LoaderDots.tsx	2026-11-01 20:11:37.679203996 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/LoaderDots.tsx	2026-11-01 20:11:37.676141842 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/LoaderDots.tsx ./berty-bridge-expo/mobile/src/components/LoaderDots.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/LoaderDots.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/LoaderDots.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,11 +1,12 @@
  import React from 'react'
 -import { View, Image, StatusBar } from 'react-native'
@@ -772,9 +880,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/LoaderDots.tsx mb/berty-bri
  		</View>
  	)
  }
-diff -ruN ma/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx mb/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx
---- ma/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx	2026-11-01 20:11:37.801579725 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx	2026-11-01 20:11:37.798731490 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx ./berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,9 +1,15 @@
  import React from 'react'
  import { StatusBar } from 'react-native'
@@ -793,9 +901,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/StatusBarPrimary.tsx mb/ber
 +		/>
 +	)
  }
-diff -ruN ma/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx mb/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx
---- ma/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx	2026-11-01 20:11:37.495809653 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx	2026-11-01 20:11:37.492672793 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx ./berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,13 +1,16 @@
  import React from 'react'
  import { StatusBar } from 'react-native'
@@ -814,9 +922,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/account/CenteredTextScreen.
  			<FlexCenterViewPriv>
  				<UnifiedText>{children}</UnifiedText>
  			</FlexCenterViewPriv>
-diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx mb/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx
---- ma/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx	2026-11-01 20:11:37.530066533 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx	2026-11-01 20:11:37.526753477 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx ./berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -13,6 +13,7 @@
  	useThemeColor,
  	useMessengerClient,
@@ -855,9 +963,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/footer/ChatFooter.tsx 
  
  		const handlePressSend = React.useCallback(async () => {
  			if (sending) {
-diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx mb/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx
---- ma/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx	2026-11-01 20:11:37.548612833 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx	2026-11-01 20:11:37.545512624 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx ./berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapper.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -3,16 +3,19 @@
  
  import beapi from '@berty/api'
@@ -886,9 +994,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/member-bar/AvatarWrapp
  		borderWidth: 1.5,
  		justifyContent: 'center',
  		alignItems: 'center',
-diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx mb/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx
---- ma/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx	2026-11-01 20:11:37.557382540 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx	2026-11-01 20:11:37.554528415 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx ./berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -2,6 +2,7 @@
  import { StyleSheet, View } from 'react-native'
  
@@ -922,9 +1030,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/member-bar/Avatars.tsx
  		justifyContent: 'center',
  		alignItems: 'center',
  		marginLeft: -10,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx mb/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx
---- ma/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx	2026-11-01 20:11:37.566026863 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx	2026-11-01 20:11:37.563084192 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx ./berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -7,6 +7,7 @@
  	useAppSelector,
  	useConversationMembers,
@@ -958,9 +1066,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/chat/member-bar/MemberBar.t
  		borderRadius: 18,
  		shadowOffset: {
  			width: 0,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx mb/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx
---- ma/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx	2026-11-01 20:11:37.507333754 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx	2026-11-01 20:11:37.504166512 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx ./berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,19 +1,20 @@
  import React from 'react'
  
@@ -984,9 +1092,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/controls/toggle/Toggle.tsx 
  				toggleBackgroundActive: colors['background-header'],
  			}}
  		/>
-diff -ruN ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx mb/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx	2026-11-01 20:11:37.659223892 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx	2026-11-01 20:11:37.656092179 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx ./berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/create-group/CreateGroupFooter.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -2,9 +2,11 @@
  import { View } from 'react-native'
  
@@ -1008,9 +1116,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupFoo
  			]}
  		>
  			{props.children}
-diff -ruN ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx mb/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx
---- ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx	2026-11-01 20:11:37.667920762 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx	2026-11-01 20:11:37.664910170 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx ./berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/create-group/CreateGroupHeader.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -31,7 +31,7 @@
  	const colors = useThemeColor()
  
@@ -1029,9 +1137,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/create-group/CreateGroupHea
  						style,
  					]}
  				>
-diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx	2026-11-01 20:11:37.462886605 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx	2026-11-01 20:11:37.459804728 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx ./berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAvatarWithStatus.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -3,6 +3,7 @@
  
  import beapi from '@berty/api'
@@ -1065,9 +1173,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MemberAva
  		justifyContent: 'center',
  	},
  	status: {
-diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx
---- ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx	2026-11-01 20:11:37.473623223 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx	2026-11-01 20:11:37.470726147 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx ./berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDropdown.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -59,7 +59,11 @@
  	}, [convPK, dispatch, item.publicKey, item.conversationPublicKey, peers])
  
@@ -1106,9 +1214,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/members/MembersDr
  		flexDirection: 'row',
  		alignItems: 'center',
  		paddingVertical: 12,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx	2026-11-01 20:11:37.431053757 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx	2026-11-01 20:11:37.427865656 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx ./berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAltDropdown.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,6 +1,8 @@
  import React, { ReactNode } from 'react'
  import { StyleSheet, View } from 'react-native'
@@ -1136,9 +1244,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkAl
 -		backgroundColor: 'white',
  	},
  })
-diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx	2026-11-01 20:11:37.440510535 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx	2026-11-01 20:11:37.437614956 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx ./berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDropdown.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -25,7 +25,7 @@
  					styles.container,
  					margin.top.medium,
@@ -1155,9 +1263,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/network/NetworkDr
 -		backgroundColor: '#F7F8FE',
  	},
  })
-diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx mb/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx
---- ma/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx	2026-11-01 20:11:37.482685372 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx	2026-11-01 20:11:37.479593407 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx ./berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDropdown.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,6 +1,8 @@
  import React, { useRef } from 'react'
  import { StyleSheet, TouchableOpacity, View } from 'react-native'
@@ -1202,9 +1310,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/dropdowns/textual/TextualDr
  		paddingLeft: 15,
  		paddingVertical: 12,
  		paddingRight: 12,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx mb/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx	2026-11-01 20:11:37.737780919 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx	2026-11-01 20:11:37.734618339 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx ./berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -2,6 +2,7 @@
  import { StyleSheet, TextInput } from 'react-native'
  
@@ -1234,9 +1342,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/StyledInput.priv.tsx
 -		color: '#393C63',
  	},
  })
-diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx
---- ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx	2026-11-01 20:11:37.760947254 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx	2026-11-01 20:11:37.758087813 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx ./berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,15 +1,18 @@
  import React, { useRef } from 'react'
  import { StyleSheet, TextInput } from 'react-native'
@@ -1265,9 +1373,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInput.tsx
  		borderRadius: 8,
  		height: 54,
  		paddingHorizontal: 16,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx mb/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx
---- ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx	2026-11-01 20:11:37.752217217 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx	2026-11-01 20:11:37.749004419 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx ./berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWithIcon.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,6 +1,8 @@
  import React, { useRef } from 'react'
  import { StyleSheet, TextInput } from 'react-native'
@@ -1297,9 +1405,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/large/LargeInputWith
  		borderRadius: 8,
  		height: 54,
  		paddingHorizontal: 16,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx
---- ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx	2026-11-01 20:11:37.772513985 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx	2026-11-01 20:11:37.769306651 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx ./berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearableInput.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,6 +1,8 @@
  import React, { useRef } from 'react'
  import { StyleSheet, TextInput } from 'react-native'
@@ -1329,9 +1437,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumClearab
  		borderRadius: 14,
  		height: 42,
  		paddingHorizontal: 12,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx
---- ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx	2026-11-01 20:11:37.781395508 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx	2026-11-01 20:11:37.778534441 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx ./berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,6 +1,8 @@
  import React, { useRef } from 'react'
  import { StyleSheet, TextInput } from 'react-native'
@@ -1361,9 +1469,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/medium/MediumInput.t
  		borderRadius: 14,
  		height: 42,
  		paddingHorizontal: 12,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx
---- ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx	2026-11-01 20:11:37.719350576 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx	2026-11-01 20:11:37.716115060 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx ./berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/inputs/small/SmallClearableInput.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,6 +1,8 @@
  import React, { useRef } from 'react'
  import { StyleSheet, TextInput } from 'react-native'
@@ -1393,9 +1501,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallClearable
  		borderRadius: 8,
  		height: 36,
  		paddingHorizontal: 12,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx mb/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx
---- ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx	2026-11-01 20:11:37.728331579 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx	2026-11-01 20:11:37.725009690 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx ./berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,15 +1,18 @@
  import React, { useRef } from 'react'
  import { StyleSheet, TextInput } from 'react-native'
@@ -1424,9 +1532,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/inputs/small/SmallInput.tsx
  		borderRadius: 8,
  		height: 36,
  		paddingHorizontal: 12,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx mb/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx
---- ma/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx	2026-11-01 20:11:37.618522322 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx	2026-11-01 20:11:37.615574680 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx ./berty-bridge-expo/mobile/src/components/items/DividerItem.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/items/DividerItem.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,13 +1,19 @@
  import React from 'react'
  import { StyleSheet, View } from 'react-native'
@@ -1449,9 +1557,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/items/DividerItem.tsx mb/be
 -		backgroundColor: '#EDF1F7',
  	},
  })
-diff -ruN ma/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx mb/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx	2026-11-01 20:11:37.587444915 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx	2026-11-01 20:11:37.584514317 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx ./berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -2,6 +2,8 @@
  import React from 'react'
  import { StyleSheet, View } from 'react-native'
@@ -1478,9 +1586,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/items/IconWithText.priv.tsx
  			/>
  			<TextPriv>{props.children}</TextPriv>
  		</View>
-diff -ruN ma/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx mb/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx
---- ma/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx	2026-11-01 20:11:37.578892238 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx	2026-11-01 20:11:37.575863090 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx ./berty-bridge-expo/mobile/src/components/items/ItemSection.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/items/ItemSection.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -2,6 +2,7 @@
  import { StyleSheet, View } from 'react-native'
  
@@ -1515,9 +1623,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/items/ItemSection.tsx mb/be
 -		backgroundColor: 'white',
  	},
  })
-diff -ruN ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx mb/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx	2026-11-01 20:11:37.639781904 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx	2026-11-01 20:11:37.636849174 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx ./berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/items/floating/FloatingContainer.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -11,7 +11,7 @@
  	return (
  		<View
@@ -1527,9 +1635,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingCont
  				border.shadow.medium,
  				styles.container,
  			]}
-diff -ruN ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx mb/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx
---- ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx	2026-11-01 20:11:37.630196285 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx	2026-11-01 20:11:37.627079083 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx ./berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/items/floating/FloatingMenuToggleAlt.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,8 +1,11 @@
  import React from 'react'
  
@@ -1543,9 +1651,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/items/floating/FloatingMenu
 +	const colors = useThemeColor()
 +	return <FloatingMenuTogglePriv {...props} backgroundColor={colors['input-background']} />
  }
-diff -ruN ma/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx mb/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx
---- ma/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx	2026-11-01 20:11:37.596455999 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx	2026-11-01 20:11:37.593399163 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx ./berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,15 +1,18 @@
  import { Icon } from '@ui-kitten/components'
  import React from 'react'
@@ -1566,9 +1674,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/items/section/MenuItem.tsx 
  		</MenuItemPriv>
  	)
  }
-diff -ruN ma/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx mb/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx	2026-11-01 20:11:37.607493414 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx	2026-11-01 20:11:37.604548428 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx ./berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/items/section/MenuItemWithIcon.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -22,7 +22,7 @@
  				{props.children}
  			</IconWithTextPriv>
@@ -1578,9 +1686,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/items/section/MenuItemWithI
  			)}
  		</MenuItemPriv>
  	)
-diff -ruN ma/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx mb/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx
---- ma/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx	1970-01-01 00:00:00.000000000 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx	2026-11-01 20:11:37.376118806 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx ./berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx	1970-01-01 00:00:00.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -0,0 +1,106 @@
 +import React from 'react'
 +import { Modal, Pressable, StyleSheet, Text, View } from 'react-native'
@@ -1688,9 +1796,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/modals/ConfirmDialog.tsx mb
 +		fontWeight: '600',
 +	},
 +})
-diff -ruN ma/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx mb/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx	2026-11-01 20:11:37.387889302 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx	2026-11-01 20:11:37.384536652 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx ./berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -2,12 +2,21 @@
  import { StyleSheet, View } from 'react-native'
  
@@ -1722,9 +1830,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/modals/cards/CardBody.priv.
  		elevation: 7,
  		shadowOpacity: 0.1,
  		shadowRadius: 40,
-diff -ruN ma/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx mb/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx
---- ma/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx	2026-11-01 20:11:37.396585930 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx	2026-11-01 20:11:37.393685735 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx ./berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWrapper.priv.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,15 +1,21 @@
  import React from 'react'
  import { StyleSheet, View } from 'react-native'
@@ -1749,9 +1857,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/modals/cards/HeaderPictoWra
  		justifyContent: 'center',
  		alignItems: 'center',
  		position: 'relative',
-diff -ruN ma/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx mb/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx
---- ma/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx	2026-11-01 20:11:37.790438943 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx	2026-11-01 20:11:37.787359350 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx ./berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -51,7 +51,7 @@
  			>
  				{header}
@@ -1761,9 +1869,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/onboarding/SwiperCard.tsx m
  				<View style={[padding.medium]}>
  					<UnifiedText
  						style={[
-diff -ruN ma/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx mb/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx
---- ma/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx	2026-11-01 20:11:37.416164422 +0000
-+++ mb/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx	2026-11-01 20:11:37.413028210 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx ./berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/components/shared-components/ContactPicker.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -106,7 +106,7 @@
  
  	return (
@@ -1773,9 +1881,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/components/shared-components/ContactPi
  		>
  			<MediumInput
  				value={searchText}
-diff -ruN ma/berty-bridge-expo/mobile/src/contexts/notification.context.tsx mb/berty-bridge-expo/mobile/src/contexts/notification.context.tsx
---- ma/berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-11-01 20:11:38.005239952 +0000
-+++ mb/berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-11-01 20:11:38.002231627 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/contexts/notification.context.tsx ./berty-bridge-expo/mobile/src/contexts/notification.context.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/contexts/notification.context.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -8,7 +8,7 @@
  import beapi from "@berty/api";
  import { useNavigation } from "@berty/navigation";
@@ -1800,9 +1908,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/contexts/notification.context.tsx mb/b
  					return;
  				}
  
-diff -ruN ma/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx mb/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx
---- ma/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx	2026-11-01 20:11:37.987547932 +0000
-+++ mb/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx	2026-11-01 20:11:37.984244823 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx ./berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx	2026-11-01 20:11:37.000000000 +0000
 @@ -1,28 +1,34 @@
 -import { mapping, light } from "@eva-design/eva";
 +import { mapping, light, dark } from "@eva-design/eva";
@@ -1858,9 +1966,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/contexts/uiKitten.context.tsx mb/berty
 +		</>
 +	);
 +};
-diff -ruN ma/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts mb/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts
---- ma/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-01 20:11:37.829402976 +0000
-+++ mb/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-01 20:11:37.826351302 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-01 20:11:37.000000000 +0000
 @@ -1,5 +1,10 @@
  import * as Notifications from 'expo-notifications'
 -import { useEffect } from 'react'
@@ -1932,9 +2040,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts mb/berty-
 +		}
 +	}, [bluetoothWanted])
 +}
-diff -ruN ma/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts mb/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts
---- ma/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts	2026-11-01 20:11:37.838219217 +0000
-+++ mb/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts	2026-11-01 20:11:37.835130141 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts ./berty-bridge-expo/mobile/src/hooks/theme.hooks.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/hooks/theme.hooks.ts	2026-11-01 20:11:37.000000000 +0000
 @@ -1,21 +1,50 @@
  import React from 'react'
 +import { useColorScheme } from 'react-native'
@@ -1993,9 +2101,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts mb/berty-bridge-e
 -	}, [themeCollection, themeIsDark, themeSelected])
 +	}, [mode, themeCollection, themeIsDark, themeSelected])
  }
-diff -ruN ma/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json mb/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json
---- ma/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-01 20:11:38.319380038 +0000
-+++ mb/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-01 20:11:38.316327790 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json ./berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-04 19:24:28.733088396 +0000
 @@ -153,7 +153,7 @@
  	"settings": {
  		"home": {
@@ -2024,7 +2132,7 @@ diff -ruN ma/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json mb/ber
 +		},
 +		"background-service": {
 +			"title": "Berty is running in the background",
-+			"desc": "Keeps Berty connected to receive messages. Touch and hold to hide this notification, or turn it off in Settings.",
++			"desc": "Berty keeps running to receive your messages. Touch and hold this notification to hide it.",
 +			"setting-title": "Run in the background",
 +			"setting-desc": "Keep Berty running to receive messages and notifications when the app is closed"
 +		},
@@ -2036,9 +2144,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json mb/ber
  		}
  	},
  	"error": {
-diff -ruN ma/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts mb/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts
---- ma/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts	2026-11-01 20:11:37.968253679 +0000
-+++ mb/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts	2026-11-01 20:11:37.965118799 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts ./berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts	2026-11-01 20:11:37.000000000 +0000
 @@ -3,6 +3,8 @@
  import darkTheme from '@berty/assets/themes/dark-theme.json'
  import darkLFTheme from '@berty/assets/themes/DarkLF-theme.json'
@@ -2074,9 +2182,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/redux/reducers/theme.reducer.ts mb/ber
 +} = slice.actions
  
  export default makeRoot(slice.reducer)
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx mb/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx
---- ma/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx	2026-11-01 20:11:38.156965269 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx	2026-11-01 20:11:38.154088541 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx ./berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/CreateGroupAddMembers.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -22,12 +22,12 @@
  	const accountContacts = useAllContacts()
  
@@ -2092,9 +2200,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/CreateGroupAddMembers/Cre
  				<View style={{ top: -30 * scaleHeight, flex: 1 }}>
  					<CreateGroupHeader
  						title={t('main.home.create-group.add-members')}
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx mb/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx
---- ma/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-11-01 20:11:38.143820645 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-11-01 20:11:38.140762826 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx ./berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -2,8 +2,10 @@
  import pickBy from 'lodash/pickBy'
  import React, { useEffect, useMemo, useRef, useState } from 'react'
@@ -2169,9 +2277,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/Home/Home.tsx mb/berty-br
  			<ScrollView
  				ref={scrollRef}
  				stickyHeaderIndices={!searchText?.length && !hasResults ? [1] : [0]}
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx mb/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx
---- ma/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx	2026-11-01 20:11:38.131477284 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx	2026-11-01 20:11:38.128166787 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx ./berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/chat/Home/components/conversation/ConversationButton.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -52,7 +52,8 @@
  				setIsPressed(true)
  			}}
@@ -2189,9 +2297,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/Home/components/conversat
 -		borderColor: '#EDF1F7',
  	},
  })
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx mb/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx
---- ma/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-11-01 20:11:38.171915115 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-11-01 20:11:38.168907519 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx ./berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -88,12 +88,12 @@
  	})
  
@@ -2207,9 +2315,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMem
  				<View style={{ top: -30 * scaleHeight, flex: 1 }}>
  					<CreateGroupHeader
  						title={t('chat.add-members.contacts')}
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx mb/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx
---- ma/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-11-01 20:11:38.091609427 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-11-01 20:11:38.088414640 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx ./berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -15,7 +15,7 @@
  import { UnifiedText } from '@berty/components/shared-components/UnifiedText'
  import { useAppDimensions } from '@berty/contexts/app-dimensions.context'
@@ -2234,9 +2342,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx mb/berty-
  
  	useFocusEffect(
  		useCallback(() => {
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx mb/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx
---- ma/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx	2026-11-01 20:11:38.307606311 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx	2026-11-01 20:11:38.304582951 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx ./berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStarted.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -6,12 +6,13 @@
  import { PrimaryButton, SecondaryButton } from '@berty/components'
  import { UnifiedText } from '@berty/components/shared-components/UnifiedText'
@@ -2261,9 +2369,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/onboarding/GetStarted/GetStart
  			<View style={[margin.bottom.big, { flexDirection: 'row', justifyContent: 'center' }]}>
  				<Logo />
  			</View>
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx mb/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx
---- ma/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx	2026-11-01 20:11:38.292221290 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx	2026-11-01 20:11:38.289299468 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx ./berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -3,16 +3,17 @@
  import { StatusBar, View } from 'react-native'
  
@@ -2284,9 +2392,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/onboarding/WebViews/WebViews.t
  			<SharedWebViews url={url} />
  		</View>
  	)
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx mb/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx
---- ma/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx	2026-11-01 20:11:38.204208198 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx	2026-11-01 20:11:38.201088646 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx ./berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -1,45 +1,67 @@
 +import { Icon } from '@ui-kitten/components'
  import React from 'react'
@@ -2391,9 +2499,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/Appearance/Appearance
 +		fontSize: 16,
 +	},
 +})
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx mb/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx
---- ma/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx	2026-11-01 20:11:38.273521033 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx	2026-11-01 20:11:38.270588503 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx ./berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicense.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -3,19 +3,20 @@
  import { View } from 'react-native'
  
@@ -2417,9 +2525,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/CodeLicense/CodeLicen
  			<WebViews url={CodeLicenseURL} />
  		</View>
  	)
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx mb/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx
---- ma/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx	2026-11-01 20:11:38.190455729 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx	2026-11-01 20:11:38.187337380 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx ./berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -3,19 +3,20 @@
  import { View } from 'react-native'
  
@@ -2443,9 +2551,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx mb/berty-
  			<WebViews url={FaqURL} />
  		</View>
  	)
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx mb/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx
---- ma/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx	2026-11-01 20:11:38.237779053 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx	2026-11-01 20:11:38.234610451 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx ./berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/PrivacyPolicy.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -3,19 +3,20 @@
  import { View } from 'react-native'
  
@@ -2469,9 +2577,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/PrivacyPolicy/Privacy
  			<WebViews url={PrivacyPolicyURL} />
  		</View>
  	)
-diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx mb/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx
---- ma/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-11-01 20:11:38.251848671 +0000
-+++ mb/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-11-01 20:11:38.248851119 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx ./berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/settings/SettingsHome/SettingsHome.tsx	2026-11-01 20:11:38.000000000 +0000
 @@ -3,6 +3,7 @@
  import { useTranslation } from 'react-i18next'
  import { Platform, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native'
@@ -2545,9 +2653,154 @@ diff -ruN ma/berty-bridge-expo/mobile/src/screens/settings/SettingsHome/Settings
  						{networkConfig && (
  							<MenuItemWithIcon
  								iconName='wifi-outline'
-diff -ruN ma/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts mb/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts
---- ma/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-11-01 20:11:38.049748092 +0000
-+++ mb/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-11-01 20:11:38.046654718 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/accounts/accountUtils.ts ./berty-bridge-expo/mobile/src/utils/accounts/accountUtils.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/accounts/accountUtils.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/utils/accounts/accountUtils.ts	2026-11-04 19:25:17.531577687 +0000
+@@ -1,15 +1,13 @@
+ import { Buffer } from 'buffer'
+-import { Platform } from 'react-native'
++import { Alert } from 'react-native'
+ import RNFS from 'react-native-fs'
+ import Share from 'react-native-share'
+ 
+ import beapi from '@berty/api'
+-import { GRPCError } from '@berty/grpc-bridge'
+ import { setAccounts } from '@berty/redux/reducers/ui.reducer'
+ import store from '@berty/redux/store'
+ import { serviceTypes } from '@berty/utils/remote-services/remote-services'
+ 
+-import { createAndSaveFile } from '../react-native/file-system'
+ import { accountClient } from './accountClient'
+ 
+ /**
+@@ -53,47 +51,94 @@
+ }
+ 
+ export const exportLogfile = async (accountId: string | null) => {
+-	// tmp filename
+-	const fileName = `berty-log-${accountId}`
+-	const outFile = RNFS.TemporaryDirectoryPath + `/${fileName}` + '.log'
++	const title = 'Export logs'
+ 
+-	// delete file if already exist
+-	await RNFS.unlink(outFile).catch(() => {})
++	if (!accountId) {
++		Alert.alert(title, 'No account selected.')
++		return
++	}
+ 
+-	let destFileName = ''
++	const outFile = `${RNFS.TemporaryDirectoryPath}/berty-log-${accountId}.log`
++
++	// Lines arrive from the stream callbacks, which are not awaited by stream.start().
++	// They are batched and appended one batch at a time, in order, and we wait for the
++	// last write before sharing the file (otherwise the file could be empty or truncated).
++	let pending: string[] = []
++	let pendingSize = 0
++	let writeChain: Promise<void> = Promise.resolve()
++	let writeError: unknown = null
++	let streamError: unknown = null
++	let lineCount = 0
++
++	const flush = () => {
++		if (pending.length === 0) {
++			return
++		}
++		const chunk = pending.join('\n') + '\n'
++		pending = []
++		pendingSize = 0
++		writeChain = writeChain
++			.then(() => RNFS.appendFile(outFile, chunk, 'utf8'))
++			.catch(err => {
++				writeError = err
++			})
++	}
+ 
+ 	try {
+-		const stream = await accountClient.streamLogfile({ accountId: accountId })
+-		stream.onMessage(async (msg, err) => {
+-			if (err?.EOF) {
+-				console.log('streamLogFile: EOF')
+-			} else if (err && !err.OK) {
+-				console.warn('streamLogFile error:', err.error.errorCode)
+-			}
++		// start from an empty file (also removes the file of a previous export)
++		await RNFS.writeFile(outFile, '', 'utf8')
+ 
+-			if (msg != null) {
+-				if (msg.fileName !== '') {
+-					destFileName = msg.fileName.replace(/^.*[\\\/]/, '').replace(/\.[^/.]+$/, '')
+-				} else {
+-					const buff = Buffer.from(msg.line).toString('utf8') + '\n'
+-					await RNFS.write(outFile, buff, -1, 'utf8')
++		const stream = await accountClient.streamLogfile({ accountId })
++		stream.onMessage((msg, err) => {
++			if (err && !err.EOF && !err.OK) {
++				streamError = err
++				return
++			}
++			if (msg && !msg.fileName && msg.line !== undefined && msg.line !== null) {
++				const line =
++					typeof msg.line === 'string' ? msg.line : Buffer.from(msg.line).toString('utf8')
++				pending.push(line)
++				pendingSize += line.length + 1
++				lineCount++
++				if (pendingSize >= 256 * 1024) {
++					flush()
+ 				}
+ 			}
+ 		})
++
++		// resolves when the stream is closed (EOF) or failed
+ 		await stream.start()
+-		if (Platform.OS === 'android') {
+-			await createAndSaveFile(outFile, destFileName, 'log')
+-		} else {
+-			await Share.open({
+-				title: 'Berty log',
+-				url: `file://${outFile}`,
+-				type: 'text/plain',
+-			})
++		flush()
++		await writeChain
++
++		if (streamError) {
++			throw streamError
+ 		}
+-	} catch (err) {
+-		if (!(err instanceof GRPCError && err?.EOF)) {
+-			console.warn(err)
++		if (writeError) {
++			throw writeError
+ 		}
++		if (lineCount === 0) {
++			Alert.alert(
++				title,
++				'The log file is empty. File logging may be disabled (check "Log filters" in the developer tools) or no log was written yet.',
++			)
++			return
++		}
++
++		// The share sheet works on every Android version and on iOS. Writing straight into
++		// the Download directory is not possible anymore with scoped storage (Android 11+),
++		// the copy failed silently.
++		await Share.open({
++			title: 'Berty log',
++			url: `file://${outFile}`,
++			type: 'text/plain',
++			filename: `berty-log-${accountId}`,
++			failOnCancel: false,
++		})
++	} catch (err) {
++		console.warn('exportLogfile failed', err)
++		const message = (err as any)?.message || String(err)
++		Alert.alert(`${title} failed`, String(message))
+ 	}
+ }
+ 
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts ./berty-bridge-expo/mobile/src/utils/bridge/bridge.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/utils/bridge/bridge.ts	2026-11-01 20:11:38.000000000 +0000
 @@ -1,5 +1,23 @@
 +import { Platform } from 'react-native'
  import { GoBridge } from 'berty-bridge-expo'
@@ -2589,9 +2842,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/utils/bridge/bridge.ts mb/berty-bridge
  			return true
  		} else {
  			console.error('unable to init bridge: ', err)
-diff -ruN ma/berty-bridge-expo/mobile/src/utils/messenger/clients.ts mb/berty-bridge-expo/mobile/src/utils/messenger/clients.ts
---- ma/berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-11-01 20:11:38.068353137 +0000
-+++ mb/berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-11-01 20:11:38.065187601 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/messenger/clients.ts ./berty-bridge-expo/mobile/src/utils/messenger/clients.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/utils/messenger/clients.ts	2026-11-01 20:11:38.000000000 +0000
 @@ -3,7 +3,6 @@
  import { Platform } from 'react-native'
  
@@ -2627,9 +2880,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/utils/messenger/clients.ts mb/berty-br
  const messengerEventStream = (
  	messengerClient: WelshMessengerServiceClient,
  	dispatch: AppDispatch,
-diff -ruN ma/berty-bridge-expo/mobile/src/utils/notification/viewing.ts mb/berty-bridge-expo/mobile/src/utils/notification/viewing.ts
---- ma/berty-bridge-expo/mobile/src/utils/notification/viewing.ts	1970-01-01 00:00:00.000000000 +0000
-+++ mb/berty-bridge-expo/mobile/src/utils/notification/viewing.ts	2026-11-01 20:11:38.015701585 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/notification/viewing.ts ./berty-bridge-expo/mobile/src/utils/notification/viewing.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/notification/viewing.ts	1970-01-01 00:00:00.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/utils/notification/viewing.ts	2026-11-01 20:11:38.000000000 +0000
 @@ -0,0 +1,29 @@
 +import { AppState } from 'react-native'
 +
@@ -2660,9 +2913,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/utils/notification/viewing.ts mb/berty
 +		(route?.params as { convId?: string } | undefined)?.convId === convPK
 +	)
 +}
-diff -ruN ma/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts mb/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts
---- ma/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts	1970-01-01 00:00:00.000000000 +0000
-+++ mb/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts	2026-11-01 20:11:38.028481127 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts ./berty-bridge-expo/mobile/src/utils/theme/themeMode.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts	1970-01-01 00:00:00.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/utils/theme/themeMode.ts	2026-11-01 20:11:38.000000000 +0000
 @@ -0,0 +1,57 @@
 +import AsyncStorage from '@react-native-async-storage/async-storage'
 +import { useSyncExternalStore } from 'react'
@@ -2721,9 +2974,9 @@ diff -ruN ma/berty-bridge-expo/mobile/src/utils/theme/themeMode.ts mb/berty-brid
 +		console.warn('unable to load the theme mode: ', e)
 +	}
 +}
-diff -ruN ma/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift mb/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift
---- ma/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-11-01 20:11:37.176570384 +0000
-+++ mb/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-11-01 20:11:37.171667862 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift ./berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift
+--- ../base/berty-2.471.14/berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/plugin/src/NotificationService/NotificationService.swift	2026-11-01 20:11:37.000000000 +0000
 @@ -71,6 +71,7 @@
          os_log("successfully decrypt push", log: oslogger)
  
@@ -2767,9 +3020,9 @@ diff -ruN ma/berty-bridge-expo/plugin/src/NotificationService/NotificationServic
 +        handler(content)
      }
  }
-diff -ruN ma/berty-bridge-expo/plugin/src/index.ts mb/berty-bridge-expo/plugin/src/index.ts
---- ma/berty-bridge-expo/plugin/src/index.ts	2026-11-01 20:11:37.147326614 +0000
-+++ mb/berty-bridge-expo/plugin/src/index.ts	2026-11-01 20:11:37.142364415 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/plugin/src/index.ts ./berty-bridge-expo/plugin/src/index.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/plugin/src/index.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/plugin/src/index.ts	2026-11-01 20:11:37.000000000 +0000
 @@ -9,6 +9,8 @@
  import withIosTeamId from "./withIosTeamId";
  import withBridgingHeader from "./withBridgingHeader";
@@ -2788,9 +3041,9 @@ diff -ruN ma/berty-bridge-expo/plugin/src/index.ts mb/berty-bridge-expo/plugin/s
  	]);
  };
  
-diff -ruN ma/berty-bridge-expo/plugin/src/notificationIconsData.ts mb/berty-bridge-expo/plugin/src/notificationIconsData.ts
---- ma/berty-bridge-expo/plugin/src/notificationIconsData.ts	1970-01-01 00:00:00.000000000 +0000
-+++ mb/berty-bridge-expo/plugin/src/notificationIconsData.ts	2026-11-01 20:11:37.189110682 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/plugin/src/notificationIconsData.ts ./berty-bridge-expo/plugin/src/notificationIconsData.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/plugin/src/notificationIconsData.ts	1970-01-01 00:00:00.000000000 +0000
++++ ./berty-bridge-expo/plugin/src/notificationIconsData.ts	2026-11-01 20:11:37.000000000 +0000
 @@ -0,0 +1,31 @@
 +// Generated: monochrome (white on transparent) Android status bar icons derived from the Berty logo.
 +// "message" is the Berty bird, "service" is the Berty bird inside a ring so that the ongoing
@@ -2823,9 +3076,9 @@ diff -ruN ma/berty-bridge-expo/plugin/src/notificationIconsData.ts mb/berty-brid
 +} as const;
 +
 +export default icons;
-diff -ruN ma/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts mb/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts
---- ma/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts	1970-01-01 00:00:00.000000000 +0000
-+++ mb/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts	2026-11-01 20:11:37.131722593 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts ./berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts	1970-01-01 00:00:00.000000000 +0000
++++ ./berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts	2026-11-01 20:11:37.000000000 +0000
 @@ -0,0 +1,45 @@
 +import {
 +	AndroidConfig,
@@ -2872,9 +3125,9 @@ diff -ruN ma/berty-bridge-expo/plugin/src/withAndroidBackgroundService.ts mb/ber
 +};
 +
 +export default withAndroidBackgroundService;
-diff -ruN ma/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts mb/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts
---- ma/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts	1970-01-01 00:00:00.000000000 +0000
-+++ mb/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts	2026-11-01 20:11:37.158007119 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts ./berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts	1970-01-01 00:00:00.000000000 +0000
++++ ./berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts	2026-11-01 20:11:37.000000000 +0000
 @@ -0,0 +1,41 @@
 +import { type ConfigPlugin, withDangerousMod } from "@expo/config-plugins";
 +import * as fs from "fs";
@@ -2917,9 +3170,9 @@ diff -ruN ma/berty-bridge-expo/plugin/src/withAndroidNotificationIcons.ts mb/ber
 +	]);
 +
 +export default withAndroidNotificationIcons;
-diff -ruN ma/berty-bridge-expo/src/BertyBridgeExpoModule.ts mb/berty-bridge-expo/src/BertyBridgeExpoModule.ts
---- ma/berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-11-01 20:11:37.096308581 +0000
-+++ mb/berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-11-01 20:11:37.090875960 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/src/BertyBridgeExpoModule.ts ./berty-bridge-expo/src/BertyBridgeExpoModule.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/src/BertyBridgeExpoModule.ts	2026-11-01 20:11:37.000000000 +0000
 @@ -23,6 +23,14 @@
  	invokeBridgeMethod(method: string, b64message: string): Promise<string>;
  	connectService(serviceName: string, address: string): Promise<void>;
@@ -2935,9 +3188,9 @@ diff -ruN ma/berty-bridge-expo/src/BertyBridgeExpoModule.ts mb/berty-bridge-expo
  }
  
  // This call loads the native module object from the JSI.
-diff -ruN ma/berty-bridge-expo/src/GoBridge.ts mb/berty-bridge-expo/src/GoBridge.ts
---- ma/berty-bridge-expo/src/GoBridge.ts	2026-11-01 20:11:37.114008487 +0000
-+++ mb/berty-bridge-expo/src/GoBridge.ts	2026-11-01 20:11:37.109026424 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/src/GoBridge.ts ./berty-bridge-expo/src/GoBridge.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/src/GoBridge.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/src/GoBridge.ts	2026-11-01 20:11:37.000000000 +0000
 @@ -21,6 +21,14 @@
  	invokeBridgeMethod(method: string, b64message: string): Promise<string>;
  	connectService(serviceName: string, address: string): Promise<void>;
@@ -2992,9 +3245,9 @@ diff -ruN ma/berty-bridge-expo/src/GoBridge.ts mb/berty-bridge-expo/src/GoBridge
  }
  
  const goBridge: GoBridgeInterface = new GoBridge();
-diff -ruN ma/go/internal/messengerpayloads/handlers.go mb/go/internal/messengerpayloads/handlers.go
---- ma/go/internal/messengerpayloads/handlers.go	2026-11-01 20:11:36.963239391 +0000
-+++ mb/go/internal/messengerpayloads/handlers.go	2026-11-01 20:11:36.960311558 +0000
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/go/internal/messengerpayloads/handlers.go ./go/internal/messengerpayloads/handlers.go
+--- ../base/berty-2.471.14/go/internal/messengerpayloads/handlers.go	2026-07-03 08:32:58.000000000 +0000
++++ ./go/internal/messengerpayloads/handlers.go	2026-11-01 20:11:36.000000000 +0000
 @@ -500,11 +500,13 @@
  	)
  
@@ -3022,3 +3275,25 @@ diff -ruN ma/go/internal/messengerpayloads/handlers.go mb/go/internal/messengerp
  	if err := h.dispatcher.StreamEvent(mt.StreamEvent_TypeContactUpdated, &mt.StreamEvent_ContactUpdated{Contact: contact}, true); err != nil {
  		return err
  	}
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/go/pkg/bertyaccount/service_log.go ./go/pkg/bertyaccount/service_log.go
+--- ../base/berty-2.471.14/go/pkg/bertyaccount/service_log.go	2026-07-03 08:32:58.000000000 +0000
++++ ./go/pkg/bertyaccount/service_log.go	2026-11-04 19:25:17.543465117 +0000
+@@ -99,6 +99,9 @@
+ 
+ 	// stream log file
+ 	scanner := bufio.NewScanner(file)
++	// the default limit is 64KB per line: a longer line (e.g. a big JSON log entry)
++	// silently stopped the export
++	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+ 	for scanner.Scan() {
+ 		err := server.Send(&accounttypes.StreamLogfile_Reply{
+ 			Line: scanner.Text(),
+@@ -112,5 +115,8 @@
+ 			return errcode.ErrCode_TODO.Wrap(err)
+ 		}
+ 	}
++	if err := scanner.Err(); err != nil {
++		return errcode.ErrCode_TODO.Wrap(err)
++	}
+ 	return nil
+ }
