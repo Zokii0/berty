@@ -423,7 +423,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/andro
  
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java
 --- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-07-03 08:32:58.000000000 +0000
-+++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-11-01 20:11:37.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerDevice.java	2026-11-07 17:59:59.528004201 +0000
 @@ -463,6 +463,28 @@
          }
      }
@@ -453,6 +453,27 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/andro
      public void closeClient() {
          mLogger.d(TAG, String.format("closeClient called: device=%s", mLogger.sensitiveObject(getMACAddress())));
  
+@@ -1192,8 +1214,9 @@
+                         success = testL2capConnection();
+                         mL2capClientHandshakeStarted = false;
+ 
+-                        // wait that server complete L2CAP tests
+-                        Thread.sleep(2000);
++                        // wait that server complete L2CAP tests (the server completes them as soon
++                        // as it receives the second payload, it was 2000 ms before)
++                        Thread.sleep(500);
+                     } catch (IOException e) {
+                         mLogger.e(TAG, String.format("createL2capSocket error: createInsecureL2capChannel cannot get stream device=%s", mLogger.sensitiveObject(getMACAddress())), e);
+                         try {
+@@ -1238,7 +1261,7 @@
+                             mLogger.d(TAG, String.format("mainQueue: discoverServices error: failed to start for device %s", mLogger.sensitiveObject(getMACAddress())));
+                         }
+                     }
+-                }, 2500);
++                }, 1000); // it was 2500 ms
+                 if (!result) {
+                     mLogger.e(TAG, String.format("discoverServices error: can't add job in queue: device=%s", mLogger.sensitiveObject(getMACAddress())));
+                 }
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java
 --- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-07-03 08:32:58.000000000 +0000
 +++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/PeerManager.java	2026-11-01 20:11:37.000000000 +0000
@@ -487,8 +508,236 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/andro
      }
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java
 --- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-07-03 08:32:58.000000000 +0000
-+++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-11-01 20:11:37.000000000 +0000
-@@ -176,6 +176,18 @@
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/gobridge/bledriver/Scanner.java	2026-11-07 17:59:59.527588551 +0000
+@@ -5,11 +5,14 @@
+ import android.bluetooth.le.BluetoothLeScanner;
+ import android.bluetooth.le.ScanCallback;
+ import android.bluetooth.le.ScanFilter;
++import android.bluetooth.le.ScanRecord;
+ import android.bluetooth.le.ScanResult;
+ import android.bluetooth.le.ScanSettings;
+ import android.content.Context;
+ import android.os.ParcelUuid;
++import android.os.SystemClock;
+ 
++import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -28,6 +31,14 @@
+     private static final int SCANNER_STATE_DISABLED = 0;
+     private static final int SCANNER_STATE_ENABLED = 1;
+     private static final int SCANNER_STATE_PAUSED = 2;
++    // The scan cycle is driven by a timer that ticks every SCAN_TICK_MS: the scanner runs for
++    // SCAN_WINDOW_TICKS ticks, then is paused for SCAN_PAUSE_TICKS tick(s) (Android refuses more
++    // than 5 scan starts per 30 seconds). Before, it was 12 s of scan and 12 s of pause.
++    private static final long SCAN_TICK_MS = 4000;
++    private static final int SCAN_WINDOW_TICKS = 3;
++    private static final int SCAN_PAUSE_TICKS = 1;
++    // minimum delay between two "connect now" requests (see maybeRequestEarlyProcessing)
++    private static final long EARLY_MIN_INTERVAL_MS = 2000;
+     // key is MAC address
+     private static final HashMap<String, ScanResult> foundMap = new HashMap<>();
+     private final Context mContext;
+@@ -38,10 +49,12 @@
+     private ScanSettings mScanSettings;
+     private BluetoothLeScanner mBluetoothLeScanner;
+     private boolean mInit;
+-    private int mScannerState;
++    private volatile int mScannerState;
+     private boolean mProcessingResult = false;
+-    private Timer mTimer;
++    private volatile Timer mTimer;
+     private TimerTask mTask;
++    private volatile int mTicks = 0;
++    private volatile long mLastEarlyMs = 0;
+ 
+     public Scanner(Context context, BleDriver bleDriver, Logger logger, BluetoothAdapter bluetoothAdapter) {
+         mContext = context;
+@@ -94,14 +107,16 @@
+     }
+ 
+     private synchronized void processResult() {
+-        ScanResult result;
+-        CountDownLatch countDown;
++        // take the results found so far; the ones found while connecting stay for the next time
++        List<ScanResult> results;
++        synchronized (foundMap) {
++            results = new ArrayList<>(foundMap.values());
++            foundMap.clear();
++        }
+ 
+         setProcessingResult(true);
+-        countDown = new CountDownLatch(foundMap.size());
+-        for (Map.Entry<String, ScanResult> keySet : foundMap.entrySet()) {
+-            result = keySet.getValue();
+-
++        CountDownLatch countDown = new CountDownLatch(results.size());
++        for (ScanResult result : results) {
+             parseResult(result, countDown);
+         }
+         try {
+@@ -109,10 +124,110 @@
+         } catch (InterruptedException e) {
+             mLogger.e(TAG, "processResult: interrupted exception", e);
+         }
+-        foundMap.clear();
+         setProcessingResult(false);
+     }
+ 
++    // Stop the scan and connect to the devices found. Always runs on the timer thread.
++    private void pauseAndProcess(ScanCallback callback) {
++        mLogger.d(TAG, "stop scanning");
++        if (mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
++            mBluetoothLeScanner.stopScan(callback);
++        } else {
++            mLogger.e(TAG, "stop scanner in timer error: BT adapter not running");
++        }
++        setScannerState(SCANNER_STATE_PAUSED);
++        mTicks = 0;
++
++        // Processing scan result
++        processResult();
++    }
++
++    private void resumeScanning(ScanCallback callback) {
++        mLogger.d(TAG, "start scanning");
++        if (mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
++            mBluetoothLeScanner.startScan(Collections.singletonList(mScanFilter), mScanSettings, callback);
++        } else {
++            mLogger.e(TAG, "start scanner in timer error: BT adapter not running");
++        }
++        setScannerState(SCANNER_STATE_ENABLED);
++        mTicks = 0;
++    }
++
++    // Before, the devices found were only handled at the end of the scan window (every 24 s in
++    // the worst case), so a peer that came back (e.g. after a Bluetooth off/on) was dialed up to
++    // 24 s after it was visible. Now, as soon as a Berty device we would connect to is seen, the
++    // scan is stopped and the connection is started on the timer thread (same thread as the
++    // regular ticks, so both can't run at the same time).
++    private void requestEarlyProcessing() {
++        final Timer timer = mTimer;
++        if (timer == null) {
++            return;
++        }
++        final ScanCallback callback = this;
++        try {
++            timer.schedule(new TimerTask() {
++                @Override
++                public void run() {
++                    if (getScannerState() == SCANNER_STATE_ENABLED) {
++                        mLogger.d(TAG, "Berty device found, connecting without waiting for the end of the scan window");
++                        pauseAndProcess(callback);
++                    }
++                }
++            }, 0);
++        } catch (IllegalStateException e) {
++            // timer cancelled by stop()
++        }
++    }
++
++    // true if the scan result is a Berty device we would connect to as a client: has the Berty
++    // service, has a greater ID than ours and is not connected yet (same rules as parseResult)
++    private boolean isConnectCandidate(ScanResult result) {
++        try {
++            ScanRecord record = result.getScanRecord();
++            if (record == null) {
++                return false;
++            }
++            List<ParcelUuid> services = record.getServiceUuids();
++            if (services == null || !services.contains(GattServer.P_SERVICE_UUID)) {
++                return false;
++            }
++
++            String id = null;
++            if (record.getDeviceName() != null && record.getDeviceName().length() > 0) {
++                id = record.getDeviceName();
++            } else {
++                byte[] data = record.getServiceData(GattServer.P_SERVICE_UUID);
++                if (data != null && data.length > 0) {
++                    id = new String(data);
++                }
++            }
++            String localId = mId;
++            if (id == null || localId == null || localId.compareTo(id) >= 0) {
++                return false;
++            }
++
++            PeerDevice peerDevice = mBleDriver.deviceManager().get(result.getDevice().getAddress());
++            return peerDevice == null || peerDevice.isClientDisconnected();
++        } catch (RuntimeException e) {
++            return false;
++        }
++    }
++
++    private void maybeRequestEarlyProcessing(ScanResult result) {
++        if (mScannerState != SCANNER_STATE_ENABLED) {
++            return;
++        }
++        long now = SystemClock.elapsedRealtime();
++        if (now - mLastEarlyMs < EARLY_MIN_INTERVAL_MS) {
++            return;
++        }
++        if (!isConnectCandidate(result)) {
++            return;
++        }
++        mLastEarlyMs = now;
++        requestEarlyProcessing();
++    }
++
+     // enable scanning
+     public boolean start(String localPID) {
+         if (!isInit()) {
+@@ -133,38 +248,28 @@
+         setScannerState(SCANNER_STATE_ENABLED);
+ 
+         ScanCallback callback = this;
++        mTicks = 0;
+         mTimer = new Timer();
+         mTask = new TimerTask() {
+             @Override
+             public void run() {
+                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                     if (getScannerState() == SCANNER_STATE_ENABLED) {
+-                        mLogger.d(TAG, "stop scanning");
+-                        if (mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
+-                            mBluetoothLeScanner.stopScan(callback);
+-                        } else {
+-                            mLogger.e(TAG, "stop scanner in timer error: BT adapter not running");
++                        mTicks++;
++                        if (mTicks >= SCAN_WINDOW_TICKS) {
++                            pauseAndProcess(callback);
+                         }
+-                        setScannerState(SCANNER_STATE_PAUSED);
+-
+-                        // Processing scan result
+-                        processResult();
+-                    } else {
+-                        if (!isProcessingResult()) {
+-                            mLogger.d(TAG, "start scanning");
+-                            if (mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
+-                                mBluetoothLeScanner.startScan(Collections.singletonList(mScanFilter), mScanSettings, callback);
+-                            } else {
+-                                mLogger.e(TAG, "start scanner in timer error: BT adapter not running");
+-                            }
+-                            setScannerState(SCANNER_STATE_ENABLED);
++                    } else if (!isProcessingResult()) {
++                        mTicks++;
++                        if (mTicks >= SCAN_PAUSE_TICKS) {
++                            resumeScanning(callback);
+                         }
+                     }
+                 }
+             }
+         };
+ 
+-        mTimer.schedule(mTask, 12000, 12000);
++        mTimer.schedule(mTask, SCAN_TICK_MS, SCAN_TICK_MS);
+ 
+         return true;
+     }
+@@ -176,6 +281,18 @@
              return;
          }
  
@@ -507,7 +756,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/andro
          if (getScannerState() == SCANNER_STATE_DISABLED) {
              mLogger.i(TAG, "stop: scanner not running");
              return;
-@@ -184,13 +196,11 @@
+@@ -184,13 +301,11 @@
          mLogger.i(TAG, "stop scanning");
          if (mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
              mBluetoothLeScanner.stopScan(this);
@@ -523,6 +772,30 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/andro
      }
  
      // Return the status of the scanner
+@@ -240,7 +355,10 @@
+     @Override
+     public void onScanResult(int callbackType, ScanResult result) {
+ //        mLogger.v(TAG, "onScanResult called with result: " + result);
+-        foundMap.put(result.getDevice().getAddress(), result);
++        synchronized (foundMap) {
++            foundMap.put(result.getDevice().getAddress(), result);
++        }
++        maybeRequestEarlyProcessing(result);
+         super.onScanResult(callbackType, result);
+     }
+ 
+@@ -251,7 +369,10 @@
+         }
+ 
+         for (ScanResult result : results) {
+-            foundMap.put(result.getDevice().getAddress(), result);
++            synchronized (foundMap) {
++                foundMap.put(result.getDevice().getAddress(), result);
++            }
++            maybeRequestEarlyProcessing(result);
+         }
+         super.onBatchScanResults(results);
+     }
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java
 --- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-07-03 08:32:58.000000000 +0000
 +++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/notification/NotificationHelper.java	2026-11-01 20:11:37.000000000 +0000
@@ -1966,22 +2239,61 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +		</>
 +	);
 +};
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/messenger.hooks.ts ./berty-bridge-expo/mobile/src/hooks/messenger.hooks.ts
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/messenger.hooks.ts	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/hooks/messenger.hooks.ts	2026-11-07 19:27:56.146097985 +0000
+@@ -149,17 +149,26 @@
+ 			return
+ 		}
+ 		let timeoutID: ReturnType<typeof setTimeout> | null = null
++		const sendOpen = () => {
++			client?.conversationOpen({ groupPk: publicKey }).catch((err: unknown) => {
++				console.warn('failed to open conversation,', err)
++			})
++		}
+ 		const handleStart = () => {
++			let t = timeout
++			if (typeof t !== 'number') {
++				t = 1000
++			}
++			if (t <= 0) {
++				// no delay: the messages are set as read as soon as the conversation is shown
++				// (with a delay, leaving the chat before it left the unread badge on the list)
++				sendOpen()
++				return
++			}
+ 			if (timeoutID === null) {
+-				let t = timeout
+-				if (typeof t !== 'number') {
+-					t = 1000
+-				}
+ 				timeoutID = setTimeout(() => {
+ 					timeoutID = null
+-					client?.conversationOpen({ groupPk: publicKey }).catch((err: unknown) => {
+-						console.warn('failed to open conversation,', err)
+-					})
++					sendOpen()
+ 				}, t)
+ 			}
+ 		}
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-07-03 08:32:58.000000000 +0000
-+++ ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-01 20:11:37.000000000 +0000
-@@ -1,5 +1,10 @@
++++ ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-07 19:27:56.145845196 +0000
+@@ -1,5 +1,12 @@
  import * as Notifications from 'expo-notifications'
 -import { useEffect } from 'react'
 +import { useCallback, useEffect } from 'react'
-+import { AppState, Platform } from 'react-native'
++import { AppState, PermissionsAndroid, Platform } from 'react-native'
 +import { GoBridge } from 'berty-bridge-expo'
 +
 +import beapi from '@berty/api'
 +import { selectNodeNetworkConfig } from '@berty/redux/reducers/networkConfig.reducer'
++import { selectSelectedAccount } from '@berty/redux/reducers/ui.reducer'
++import { accountClient } from '@berty/utils/accounts/accountClient'
  
  import { useAppDispatch } from '@berty/hooks'
  import { useNavigation } from '@berty/navigation'
-@@ -10,6 +15,7 @@
+@@ -10,6 +17,7 @@
  import { NotificationsInhibitor } from '@berty/utils/notification/notif-in-app'
  import { Maybe } from '@berty/utils/type/maybe'
  
@@ -1989,7 +2301,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  import { useMountEffect } from './react.hooks'
  
  export const useNotificationsInhibitor = (inhibitor: Maybe<NotificationsInhibitor>) => {
-@@ -63,8 +69,50 @@
+@@ -63,8 +71,78 @@
  
  		dismiss()
  		const unsubscribeFocus = navigation.addListener('focus', dismiss)
@@ -2009,6 +2321,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +
 +const BLUETOOTH_PROMPT_INTERVAL_MS = 2 * 60 * 1000
 +let lastBluetoothPrompt = 0
++let bluetoothPromptRunning = false
 +
 +// Android: returns a function that offers to turn Bluetooth on (system dialog) when it is
 +// useful, i.e. when Bluetooth is enabled in Berty's network settings, is turned off on the
@@ -2017,28 +2330,55 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +// It asks at most once every couple of minutes.
 +export const useBluetoothEnablePrompt = () => {
 +	const nodeNetworkConfig = useAppSelector(selectNodeNetworkConfig)
-+	const bluetoothWanted =
-+		nodeNetworkConfig?.bluetoothLe === beapi.account.NetworkConfig.Flag.Enabled
++	const selectedAccount = useAppSelector(selectSelectedAccount)
 +
 +	return useCallback(async () => {
 +		if (
 +			Platform.OS !== 'android' ||
-+			!bluetoothWanted ||
++			bluetoothPromptRunning ||
 +			Date.now() - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS
 +		) {
 +			return
 +		}
++		bluetoothPromptRunning = true
 +		try {
++			// The network config in the store is only filled when the settings screen was opened
++			// (it is empty after the start of the app), so read the one of the account if needed.
++			let bluetoothLe = nodeNetworkConfig?.bluetoothLe
++			if (!bluetoothLe) {
++				const conf = await accountClient.networkConfigGet({ accountId: selectedAccount })
++				bluetoothLe = conf.currentConfig?.bluetoothLe
++			}
++			if (bluetoothLe !== beapi.account.NetworkConfig.Flag.Enabled) {
++				return
++			}
++
 +			if ((await GoBridge.isBluetoothEnabled()) || (await GoBridge.hasNetworkConnection())) {
 +				return
 +			}
-+			lastBluetoothPrompt = Date.now()
++
++			// Android 12+: without this permission the system dialog is closed right away
++			if (typeof Platform.Version === 'number' && Platform.Version >= 31) {
++				const connectPermission = PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
++				if (connectPermission && !(await PermissionsAndroid.check(connectPermission))) {
++					lastBluetoothPrompt = Date.now()
++					const result = await PermissionsAndroid.request(connectPermission)
++					if (result !== PermissionsAndroid.RESULTS.GRANTED) {
++						return
++					}
++				}
++			}
++
 +			// the system dialog ("Allow Berty to turn on Bluetooth?") explains itself
-+			await GoBridge.requestEnableBluetooth()
++			if (await GoBridge.requestEnableBluetooth()) {
++				lastBluetoothPrompt = Date.now()
++			}
 +		} catch (err) {
 +			console.warn('bluetooth state check failed: ', err)
++		} finally {
++			bluetoothPromptRunning = false
 +		}
-+	}, [bluetoothWanted])
++	}, [nodeNetworkConfig, selectedAccount])
 +}
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts ./berty-bridge-expo/mobile/src/hooks/theme.hooks.ts
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/theme.hooks.ts	2026-07-03 08:32:58.000000000 +0000
@@ -2297,6 +2637,18 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 -		borderColor: '#EDF1F7',
  	},
  })
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/MultiMember/MultiMember.tsx ./berty-bridge-expo/mobile/src/screens/chat/MultiMember/MultiMember.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/MultiMember/MultiMember.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/chat/MultiMember/MultiMember.tsx	2026-11-07 19:27:56.146428997 +0000
+@@ -33,7 +33,7 @@
+ 	const { flex, opacity } = useStyles()
+ 	const { scaleSize } = useAppDimensions()
+ 	const colors = useThemeColor()
+-	useReadEffect(params.convId, 1000)
++	useReadEffect(params.convId, 0)
+ 	useDismissNotificationsEffect(params.convId)
+ 	const conv = useConversation(params.convId)
+ 
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx ./berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-07-03 08:32:58.000000000 +0000
 +++ ./berty-bridge-expo/mobile/src/screens/chat/MultiMemberSettingsAddMembers/MultiMemberSettingsAddMembers.tsx	2026-11-01 20:11:38.000000000 +0000
@@ -2315,6 +2667,18 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  				<View style={{ top: -30 * scaleHeight, flex: 1 }}>
  					<CreateGroupHeader
  						title={t('chat.add-members.contacts')}
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/OneToOne/OneToOne.tsx ./berty-bridge-expo/mobile/src/screens/chat/OneToOne/OneToOne.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/OneToOne/OneToOne.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/chat/OneToOne/OneToOne.tsx	2026-11-07 19:27:56.146249418 +0000
+@@ -39,7 +39,7 @@
+ 
+ 		const { opacity, flex } = useStyles()
+ 		const colors = useThemeColor()
+-		useReadEffect(params?.convId, 1000)
++		useReadEffect(params?.convId, 0)
+ 		useDismissNotificationsEffect(params?.convId)
+ 		const { t } = useTranslation()
+ 		const conv = useConversation(params?.convId)
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx ./berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-07-03 08:32:58.000000000 +0000
 +++ ./berty-bridge-expo/mobile/src/screens/chat/Share/Share.tsx	2026-11-01 20:11:38.000000000 +0000

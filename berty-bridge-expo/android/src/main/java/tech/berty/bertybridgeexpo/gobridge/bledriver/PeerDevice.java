@@ -1214,8 +1214,9 @@ public class PeerDevice {
                         success = testL2capConnection();
                         mL2capClientHandshakeStarted = false;
 
-                        // wait that server complete L2CAP tests
-                        Thread.sleep(2000);
+                        // wait that server complete L2CAP tests (the server completes them as soon
+                        // as it receives the second payload, it was 2000 ms before)
+                        Thread.sleep(500);
                     } catch (IOException e) {
                         mLogger.e(TAG, String.format("createL2capSocket error: createInsecureL2capChannel cannot get stream device=%s", mLogger.sensitiveObject(getMACAddress())), e);
                         try {
@@ -1260,7 +1261,7 @@ public class PeerDevice {
                             mLogger.d(TAG, String.format("mainQueue: discoverServices error: failed to start for device %s", mLogger.sensitiveObject(getMACAddress())));
                         }
                     }
-                }, 2500);
+                }, 1000); // it was 2500 ms
                 if (!result) {
                     mLogger.e(TAG, String.format("discoverServices error: can't add job in queue: device=%s", mLogger.sensitiveObject(getMACAddress())));
                 }
