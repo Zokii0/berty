@@ -2297,7 +2297,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  		}
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-07-03 08:32:58.000000000 +0000
-+++ ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-08 11:22:08.893833601 +0000
++++ ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-08 12:33:09.902111185 +0000
 @@ -1,5 +1,12 @@
  import * as Notifications from 'expo-notifications'
 -import { useEffect } from 'react'
@@ -2320,7 +2320,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  import { useMountEffect } from './react.hooks'
  
  export const useNotificationsInhibitor = (inhibitor: Maybe<NotificationsInhibitor>) => {
-@@ -63,8 +71,110 @@
+@@ -63,8 +71,114 @@
  
  		dismiss()
  		const unsubscribeFocus = navigation.addListener('focus', dismiss)
@@ -2389,13 +2389,17 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +
 +			// The network config in the store is only filled when the settings screen was opened
 +			// (it is empty after the start of the app), so read the one of the account if needed.
-+			let bluetoothLe = nodeNetworkConfig?.bluetoothLe
++			// The enums of these objects can be strings ("Enabled") and not numbers (the settings
++			// screens convert them with fromObject), so convert before comparing.
++			const toFlag = (value: unknown) =>
++				beapi.account.NetworkConfig.fromObject({ bluetoothLe: value as any }).bluetoothLe
++			let bluetoothLe = toFlag(nodeNetworkConfig?.bluetoothLe)
 +			if (!bluetoothLe) {
 +				const conf = await accountClient.networkConfigGet({ accountId: selectedAccount })
-+				bluetoothLe = conf.currentConfig?.bluetoothLe
++				bluetoothLe = toFlag(conf.currentConfig?.bluetoothLe)
 +			}
 +			if (bluetoothLe !== beapi.account.NetworkConfig.Flag.Enabled) {
-+				reportBluetoothPrompt(`not asked, Bluetooth is not enabled in the network settings (${bluetoothLe})`)
++				reportBluetoothPrompt(`not asked, Bluetooth is off in the network settings (${bluetoothLe})`)
 +				return
 +			}
 +

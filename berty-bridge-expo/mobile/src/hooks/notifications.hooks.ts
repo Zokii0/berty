@@ -136,13 +136,17 @@ export const useBluetoothEnablePrompt = () => {
 
 			// The network config in the store is only filled when the settings screen was opened
 			// (it is empty after the start of the app), so read the one of the account if needed.
-			let bluetoothLe = nodeNetworkConfig?.bluetoothLe
+			// The enums of these objects can be strings ("Enabled") and not numbers (the settings
+			// screens convert them with fromObject), so convert before comparing.
+			const toFlag = (value: unknown) =>
+				beapi.account.NetworkConfig.fromObject({ bluetoothLe: value as any }).bluetoothLe
+			let bluetoothLe = toFlag(nodeNetworkConfig?.bluetoothLe)
 			if (!bluetoothLe) {
 				const conf = await accountClient.networkConfigGet({ accountId: selectedAccount })
-				bluetoothLe = conf.currentConfig?.bluetoothLe
+				bluetoothLe = toFlag(conf.currentConfig?.bluetoothLe)
 			}
 			if (bluetoothLe !== beapi.account.NetworkConfig.Flag.Enabled) {
-				reportBluetoothPrompt(`not asked, Bluetooth is not enabled in the network settings (${bluetoothLe})`)
+				reportBluetoothPrompt(`not asked, Bluetooth is off in the network settings (${bluetoothLe})`)
 				return
 			}
 
