@@ -282,14 +282,24 @@ class BertyBridgeExpoModule : Module() {
         AsyncFunction("requestEnableBluetooth") { promise: Promise ->
             val activity = appContext.currentActivity
             if (activity == null) {
+                Logger.w(TAG, "requestEnableBluetooth: no current activity")
                 promise.resolve(false)
             } else {
-                try {
-                    activity.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                    promise.resolve(true)
-                } catch (e: Exception) {
-                    Logger.e(TAG, "unable to request to enable Bluetooth", e)
-                    promise.resolve(false)
+                // Started on the UI thread and with startActivityForResult, as documented for
+                // ACTION_REQUEST_ENABLE: the system dialog needs to know the calling app.
+                // The result is not needed, the Bluetooth state receiver handles the change.
+                activity.runOnUiThread {
+                    try {
+                        activity.startActivityForResult(
+                            Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE),
+                            REQUEST_ENABLE_BLUETOOTH
+                        )
+                        Logger.i(TAG, "requestEnableBluetooth: system dialog requested")
+                        promise.resolve(true)
+                    } catch (e: Exception) {
+                        Logger.e(TAG, "unable to request to enable Bluetooth", e)
+                        promise.resolve(false)
+                    }
                 }
             }
         }
@@ -483,6 +493,8 @@ class BertyBridgeExpoModule : Module() {
     }
 
     companion object {
+        private const val REQUEST_ENABLE_BLUETOOTH = 4242
+
         var bridgeMessenger: Bridge? = null
             private set
     }

@@ -103,7 +103,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/.github/workflows/berty
 +          if-no-files-found: error
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt
 --- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-07-03 08:32:58.000000000 +0000
-+++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-11-01 20:11:37.000000000 +0000
++++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/BertyBridgeExpoModule.kt	2026-11-08 07:05:24.248355271 +0000
 @@ -1,11 +1,17 @@
  package tech.berty.bertybridgeexpo
  
@@ -138,7 +138,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/andro
          }
  
          OnStartObserving {
-@@ -251,6 +259,92 @@
+@@ -251,6 +259,102 @@
              }
          }
  
@@ -165,14 +165,24 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/andro
 +        AsyncFunction("requestEnableBluetooth") { promise: Promise ->
 +            val activity = appContext.currentActivity
 +            if (activity == null) {
++                Logger.w(TAG, "requestEnableBluetooth: no current activity")
 +                promise.resolve(false)
 +            } else {
-+                try {
-+                    activity.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-+                    promise.resolve(true)
-+                } catch (e: Exception) {
-+                    Logger.e(TAG, "unable to request to enable Bluetooth", e)
-+                    promise.resolve(false)
++                // Started on the UI thread and with startActivityForResult, as documented for
++                // ACTION_REQUEST_ENABLE: the system dialog needs to know the calling app.
++                // The result is not needed, the Bluetooth state receiver handles the change.
++                activity.runOnUiThread {
++                    try {
++                        activity.startActivityForResult(
++                            Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE),
++                            REQUEST_ENABLE_BLUETOOTH
++                        )
++                        Logger.i(TAG, "requestEnableBluetooth: system dialog requested")
++                        promise.resolve(true)
++                    } catch (e: Exception) {
++                        Logger.e(TAG, "unable to request to enable Bluetooth", e)
++                        promise.resolve(false)
++                    }
 +                }
 +            }
 +        }
@@ -231,7 +241,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/andro
          AsyncFunction("closeBridge") { promise: Promise ->
              try {
                  if (bridgeMessenger != null) {
-@@ -262,6 +356,7 @@
+@@ -262,6 +366,7 @@
                      remoteBridge = null
                  }
                  serviceClient = null
@@ -239,6 +249,15 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/andro
                  promise.resolve(true)
              } catch (err: CodedException) {
                  promise.reject(err)
+@@ -388,6 +493,8 @@
+     }
+ 
+     companion object {
++        private const val REQUEST_ENABLE_BLUETOOTH = 4242
++
+         var bridgeMessenger: Bridge? = null
+             private set
+     }
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt
 --- ../base/berty-2.471.14/berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-07-03 08:32:58.000000000 +0000
 +++ ./berty-bridge-expo/android/src/main/java/tech/berty/bertybridgeexpo/LifecycleListener.kt	2026-11-01 20:11:37.000000000 +0000
@@ -2278,13 +2297,13 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  		}
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-07-03 08:32:58.000000000 +0000
-+++ ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-07 19:27:56.145845196 +0000
++++ ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-08 07:05:24.248980248 +0000
 @@ -1,5 +1,12 @@
  import * as Notifications from 'expo-notifications'
 -import { useEffect } from 'react'
 +import { useCallback, useEffect } from 'react'
 +import { AppState, PermissionsAndroid, Platform } from 'react-native'
-+import { GoBridge } from 'berty-bridge-expo'
++import { GoBridge, GoLogLevel } from 'berty-bridge-expo'
 +
 +import beapi from '@berty/api'
 +import { selectNodeNetworkConfig } from '@berty/redux/reducers/networkConfig.reducer'
@@ -2301,7 +2320,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  import { useMountEffect } from './react.hooks'
  
  export const useNotificationsInhibitor = (inhibitor: Maybe<NotificationsInhibitor>) => {
-@@ -63,8 +71,78 @@
+@@ -63,8 +71,98 @@
  
  		dismiss()
  		const unsubscribeFocus = navigation.addListener('focus', dismiss)
@@ -2323,6 +2342,16 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +let lastBluetoothPrompt = 0
 +let bluetoothPromptRunning = false
 +
++// written in the logs of the app (Developer tools -> Export logs), to know why the prompt is
++// (not) shown
++const logBluetoothPrompt = (message: string) => {
++	try {
++		GoBridge.log({ level: GoLogLevel.warn, message: `bluetooth prompt: ${message}` })
++	} catch (err) {
++		console.warn('bluetooth prompt log failed: ', err)
++	}
++}
++
 +// Android: returns a function that offers to turn Bluetooth on (system dialog) when it is
 +// useful, i.e. when Bluetooth is enabled in Berty's network settings, is turned off on the
 +// phone and there is no Wi-Fi/mobile/ethernet network (so Bluetooth is the only way to reach
@@ -2333,11 +2362,11 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +	const selectedAccount = useAppSelector(selectSelectedAccount)
 +
 +	return useCallback(async () => {
-+		if (
-+			Platform.OS !== 'android' ||
-+			bluetoothPromptRunning ||
-+			Date.now() - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS
-+		) {
++		if (Platform.OS !== 'android' || bluetoothPromptRunning) {
++			return
++		}
++		if (Date.now() - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS) {
++			logBluetoothPrompt('skipped, already asked less than 2 minutes ago')
 +			return
 +		}
 +		bluetoothPromptRunning = true
@@ -2350,10 +2379,16 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +				bluetoothLe = conf.currentConfig?.bluetoothLe
 +			}
 +			if (bluetoothLe !== beapi.account.NetworkConfig.Flag.Enabled) {
++				logBluetoothPrompt(`skipped, Bluetooth is not enabled in the network config (${bluetoothLe})`)
 +				return
 +			}
 +
-+			if ((await GoBridge.isBluetoothEnabled()) || (await GoBridge.hasNetworkConnection())) {
++			const bluetoothOn = await GoBridge.isBluetoothEnabled()
++			const hasNetwork = await GoBridge.hasNetworkConnection()
++			if (bluetoothOn || hasNetwork) {
++				logBluetoothPrompt(
++					`skipped, bluetoothEnabled=${bluetoothOn} hasNetworkConnection=${hasNetwork}`,
++				)
 +				return
 +			}
 +
@@ -2363,6 +2398,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +				if (connectPermission && !(await PermissionsAndroid.check(connectPermission))) {
 +					lastBluetoothPrompt = Date.now()
 +					const result = await PermissionsAndroid.request(connectPermission)
++					logBluetoothPrompt(`BLUETOOTH_CONNECT was not granted, request result: ${result}`)
 +					if (result !== PermissionsAndroid.RESULTS.GRANTED) {
 +						return
 +					}
@@ -2370,11 +2406,14 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +			}
 +
 +			// the system dialog ("Allow Berty to turn on Bluetooth?") explains itself
-+			if (await GoBridge.requestEnableBluetooth()) {
++			const requested = await GoBridge.requestEnableBluetooth()
++			logBluetoothPrompt(`system dialog requested: ${requested}`)
++			if (requested) {
 +				lastBluetoothPrompt = Date.now()
 +			}
 +		} catch (err) {
 +			console.warn('bluetooth state check failed: ', err)
++			logBluetoothPrompt(`failed: ${String((err as any)?.message ?? err)}`)
 +		} finally {
 +			bluetoothPromptRunning = false
 +		}
@@ -3641,23 +3680,88 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/go/internal/messengerpa
  	}
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/go/pkg/bertyaccount/service_log.go ./go/pkg/bertyaccount/service_log.go
 --- ../base/berty-2.471.14/go/pkg/bertyaccount/service_log.go	2026-07-03 08:32:58.000000000 +0000
-+++ ./go/pkg/bertyaccount/service_log.go	2026-11-04 19:25:17.543465117 +0000
-@@ -99,6 +99,9 @@
++++ ./go/pkg/bertyaccount/service_log.go	2026-11-08 07:06:01.377027084 +0000
+@@ -7,6 +7,7 @@
+ 	"io"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 
+ 	"berty.tech/berty/v2/go/internal/accountutils"
+ 	"berty.tech/berty/v2/go/pkg/accounttypes"
+@@ -14,6 +15,9 @@
+ 	"berty.tech/weshnet/v2/pkg/logutil"
+ )
+ 
++// size (in bytes) from which the lines read from a log file are sent to the client
++const logfileChunkSize = 128 * 1024
++
+ func (s *service) LogfileList(ctx context.Context, _ *accounttypes.LogfileList_Request) (*accounttypes.LogfileList_Reply, error) {
+ 	rootDir := s.appRootDir
+ 
+@@ -98,19 +102,55 @@
+ 	}
  
  	// stream log file
++	//
++	// The lines are sent in chunks (the lines of a chunk are separated by "\n", without a trailing
++	// "\n"): sending one message per line took very long for a big log file (tens of thousands
++	// of messages through the bridge). The receiver adds a "\n" after each message.
  	scanner := bufio.NewScanner(file)
+-	for scanner.Scan() {
+-		err := server.Send(&accounttypes.StreamLogfile_Reply{
+-			Line: scanner.Text(),
+-		})
+-
+-		switch err {
+-		case nil: // ok
+-		case io.EOF:
 +	// the default limit is 64KB per line: a longer line (e.g. a big JSON log entry)
 +	// silently stopped the export
 +	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
- 	for scanner.Scan() {
- 		err := server.Send(&accounttypes.StreamLogfile_Reply{
- 			Line: scanner.Text(),
-@@ -112,5 +115,8 @@
- 			return errcode.ErrCode_TODO.Wrap(err)
++
++	var chunk strings.Builder
++	chunkLines := 0
++	flush := func() error {
++		if chunkLines == 0 {
+ 			return nil
+-		default:
+-			return errcode.ErrCode_TODO.Wrap(err)
  		}
- 	}
-+	if err := scanner.Err(); err != nil {
++		line := strings.ToValidUTF8(chunk.String(), "\uFFFD")
++		chunk.Reset()
++		chunkLines = 0
++		return server.Send(&accounttypes.StreamLogfile_Reply{Line: line})
++	}
++
++	for scanner.Scan() {
++		if chunkLines > 0 {
++			chunk.WriteByte('\n')
++		}
++		chunk.WriteString(scanner.Text())
++		chunkLines++
++
++		if chunk.Len() >= logfileChunkSize {
++			switch err := flush(); err {
++			case nil: // ok
++			case io.EOF:
++				return nil
++			default:
++				return errcode.ErrCode_TODO.Wrap(err)
++			}
++		}
++	}
++
++	switch err := flush(); err {
++	case nil: // ok
++	case io.EOF:
++		return nil
++	default:
 +		return errcode.ErrCode_TODO.Wrap(err)
 +	}
++
++	if err := scanner.Err(); err != nil {
++		return errcode.ErrCode_TODO.Wrap(err)
+ 	}
  	return nil
  }

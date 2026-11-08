@@ -1,7 +1,7 @@
 import * as Notifications from 'expo-notifications'
 import { useCallback, useEffect } from 'react'
 import { AppState, PermissionsAndroid, Platform } from 'react-native'
-import { GoBridge } from 'berty-bridge-expo'
+import { GoBridge, GoLogLevel } from 'berty-bridge-expo'
 
 import beapi from '@berty/api'
 import { selectNodeNetworkConfig } from '@berty/redux/reducers/networkConfig.reducer'
@@ -89,6 +89,16 @@ const BLUETOOTH_PROMPT_INTERVAL_MS = 2 * 60 * 1000
 let lastBluetoothPrompt = 0
 let bluetoothPromptRunning = false
 
+// written in the logs of the app (Developer tools -> Export logs), to know why the prompt is
+// (not) shown
+const logBluetoothPrompt = (message: string) => {
+	try {
+		GoBridge.log({ level: GoLogLevel.warn, message: `bluetooth prompt: ${message}` })
+	} catch (err) {
+		console.warn('bluetooth prompt log failed: ', err)
+	}
+}
+
 // Android: returns a function that offers to turn Bluetooth on (system dialog) when it is
 // useful, i.e. when Bluetooth is enabled in Berty's network settings, is turned off on the
 // phone and there is no Wi-Fi/mobile/ethernet network (so Bluetooth is the only way to reach
@@ -99,11 +109,11 @@ export const useBluetoothEnablePrompt = () => {
 	const selectedAccount = useAppSelector(selectSelectedAccount)
 
 	return useCallback(async () => {
-		if (
-			Platform.OS !== 'android' ||
-			bluetoothPromptRunning ||
-			Date.now() - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS
-		) {
+		if (Platform.OS !== 'android' || bluetoothPromptRunning) {
+			return
+		}
+		if (Date.now() - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS) {
+			logBluetoothPrompt('skipped, already asked less than 2 minutes ago')
 			return
 		}
 		bluetoothPromptRunning = true
@@ -116,10 +126,16 @@ export const useBluetoothEnablePrompt = () => {
 				bluetoothLe = conf.currentConfig?.bluetoothLe
 			}
 			if (bluetoothLe !== beapi.account.NetworkConfig.Flag.Enabled) {
+				logBluetoothPrompt(`skipped, Bluetooth is not enabled in the network config (${bluetoothLe})`)
 				return
 			}
 
-			if ((await GoBridge.isBluetoothEnabled()) || (await GoBridge.hasNetworkConnection())) {
+			const bluetoothOn = await GoBridge.isBluetoothEnabled()
+			const hasNetwork = await GoBridge.hasNetworkConnection()
+			if (bluetoothOn || hasNetwork) {
+				logBluetoothPrompt(
+					`skipped, bluetoothEnabled=${bluetoothOn} hasNetworkConnection=${hasNetwork}`,
+				)
 				return
 			}
 
@@ -129,6 +145,7 @@ export const useBluetoothEnablePrompt = () => {
 				if (connectPermission && !(await PermissionsAndroid.check(connectPermission))) {
 					lastBluetoothPrompt = Date.now()
 					const result = await PermissionsAndroid.request(connectPermission)
+					logBluetoothPrompt(`BLUETOOTH_CONNECT was not granted, request result: ${result}`)
 					if (result !== PermissionsAndroid.RESULTS.GRANTED) {
 						return
 					}
@@ -136,11 +153,14 @@ export const useBluetoothEnablePrompt = () => {
 			}
 
 			// the system dialog ("Allow Berty to turn on Bluetooth?") explains itself
-			if (await GoBridge.requestEnableBluetooth()) {
+			const requested = await GoBridge.requestEnableBluetooth()
+			logBluetoothPrompt(`system dialog requested: ${requested}`)
+			if (requested) {
 				lastBluetoothPrompt = Date.now()
 			}
 		} catch (err) {
 			console.warn('bluetooth state check failed: ', err)
+			logBluetoothPrompt(`failed: ${String((err as any)?.message ?? err)}`)
 		} finally {
 			bluetoothPromptRunning = false
 		}
