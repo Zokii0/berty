@@ -2297,13 +2297,13 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  		}
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-07-03 08:32:58.000000000 +0000
-+++ ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-08 07:05:24.248980248 +0000
++++ ./berty-bridge-expo/mobile/src/hooks/notifications.hooks.ts	2026-11-08 11:22:08.893833601 +0000
 @@ -1,5 +1,12 @@
  import * as Notifications from 'expo-notifications'
 -import { useEffect } from 'react'
 +import { useCallback, useEffect } from 'react'
-+import { AppState, PermissionsAndroid, Platform } from 'react-native'
-+import { GoBridge, GoLogLevel } from 'berty-bridge-expo'
++import { AppState, PermissionsAndroid, Platform, ToastAndroid } from 'react-native'
++import { GoBridge } from 'berty-bridge-expo'
 +
 +import beapi from '@berty/api'
 +import { selectNodeNetworkConfig } from '@berty/redux/reducers/networkConfig.reducer'
@@ -2320,7 +2320,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  import { useMountEffect } from './react.hooks'
  
  export const useNotificationsInhibitor = (inhibitor: Maybe<NotificationsInhibitor>) => {
-@@ -63,8 +71,98 @@
+@@ -63,8 +71,110 @@
  
  		dismiss()
  		const unsubscribeFocus = navigation.addListener('focus', dismiss)
@@ -2339,16 +2339,19 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  }
 +
 +const BLUETOOTH_PROMPT_INTERVAL_MS = 2 * 60 * 1000
++// a check that does not finish in this time is considered stuck (it would block the next ones)
++const BLUETOOTH_PROMPT_STUCK_MS = 20 * 1000
 +let lastBluetoothPrompt = 0
-+let bluetoothPromptRunning = false
++let bluetoothPromptStartedAt = 0
 +
-+// written in the logs of the app (Developer tools -> Export logs), to know why the prompt is
-+// (not) shown
-+const logBluetoothPrompt = (message: string) => {
++// Test builds: shown on screen when the phone is offline with Bluetooth off (the case where the
++// prompt is expected) but the system dialog is not requested, to know why.
++const reportBluetoothPrompt = (message: string) => {
++	console.warn(`bluetooth prompt: ${message}`)
 +	try {
-+		GoBridge.log({ level: GoLogLevel.warn, message: `bluetooth prompt: ${message}` })
++		ToastAndroid.show(`Bluetooth prompt: ${message}`, ToastAndroid.LONG)
 +	} catch (err) {
-+		console.warn('bluetooth prompt log failed: ', err)
++		console.warn('bluetooth prompt toast failed: ', err)
 +	}
 +}
 +
@@ -2362,15 +2365,28 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +	const selectedAccount = useAppSelector(selectSelectedAccount)
 +
 +	return useCallback(async () => {
-+		if (Platform.OS !== 'android' || bluetoothPromptRunning) {
++		if (Platform.OS !== 'android') {
 +			return
 +		}
-+		if (Date.now() - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS) {
-+			logBluetoothPrompt('skipped, already asked less than 2 minutes ago')
++		const now = Date.now()
++		if (bluetoothPromptStartedAt && now - bluetoothPromptStartedAt < BLUETOOTH_PROMPT_STUCK_MS) {
++			return // already running
++		}
++		if (now - lastBluetoothPrompt < BLUETOOTH_PROMPT_INTERVAL_MS) {
 +			return
 +		}
-+		bluetoothPromptRunning = true
++		bluetoothPromptStartedAt = now
++
++		let offline = false
 +		try {
++			// the common case first: Bluetooth on or a network available, nothing to do
++			const bluetoothOn = await GoBridge.isBluetoothEnabled()
++			const hasNetwork = await GoBridge.hasNetworkConnection()
++			if (bluetoothOn || hasNetwork) {
++				return
++			}
++			offline = true
++
 +			// The network config in the store is only filled when the settings screen was opened
 +			// (it is empty after the start of the app), so read the one of the account if needed.
 +			let bluetoothLe = nodeNetworkConfig?.bluetoothLe
@@ -2379,16 +2395,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +				bluetoothLe = conf.currentConfig?.bluetoothLe
 +			}
 +			if (bluetoothLe !== beapi.account.NetworkConfig.Flag.Enabled) {
-+				logBluetoothPrompt(`skipped, Bluetooth is not enabled in the network config (${bluetoothLe})`)
-+				return
-+			}
-+
-+			const bluetoothOn = await GoBridge.isBluetoothEnabled()
-+			const hasNetwork = await GoBridge.hasNetworkConnection()
-+			if (bluetoothOn || hasNetwork) {
-+				logBluetoothPrompt(
-+					`skipped, bluetoothEnabled=${bluetoothOn} hasNetworkConnection=${hasNetwork}`,
-+				)
++				reportBluetoothPrompt(`not asked, Bluetooth is not enabled in the network settings (${bluetoothLe})`)
 +				return
 +			}
 +
@@ -2398,8 +2405,8 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +				if (connectPermission && !(await PermissionsAndroid.check(connectPermission))) {
 +					lastBluetoothPrompt = Date.now()
 +					const result = await PermissionsAndroid.request(connectPermission)
-+					logBluetoothPrompt(`BLUETOOTH_CONNECT was not granted, request result: ${result}`)
 +					if (result !== PermissionsAndroid.RESULTS.GRANTED) {
++						reportBluetoothPrompt(`not asked, permission BLUETOOTH_CONNECT: ${result}`)
 +						return
 +					}
 +				}
@@ -2407,15 +2414,20 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +
 +			// the system dialog ("Allow Berty to turn on Bluetooth?") explains itself
 +			const requested = await GoBridge.requestEnableBluetooth()
-+			logBluetoothPrompt(`system dialog requested: ${requested}`)
 +			if (requested) {
 +				lastBluetoothPrompt = Date.now()
++				reportBluetoothPrompt('system dialog requested')
++			} else {
++				reportBluetoothPrompt('the system dialog could not be started')
 +			}
 +		} catch (err) {
-+			console.warn('bluetooth state check failed: ', err)
-+			logBluetoothPrompt(`failed: ${String((err as any)?.message ?? err)}`)
++			if (offline) {
++				reportBluetoothPrompt(`failed: ${String((err as any)?.message ?? err)}`)
++			} else {
++				console.warn('bluetooth state check failed: ', err)
++			}
 +		} finally {
-+			bluetoothPromptRunning = false
++			bluetoothPromptStartedAt = 0
 +		}
 +	}, [nodeNetworkConfig, selectedAccount])
 +}
@@ -2482,7 +2494,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  }
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json ./berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-07-03 08:32:58.000000000 +0000
-+++ ./berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-04 19:24:28.733088396 +0000
++++ ./berty-bridge-expo/mobile/src/i18n/locale/en-US/messages.json	2026-11-08 11:21:49.090748467 +0000
 @@ -153,7 +153,7 @@
  	"settings": {
  		"home": {
@@ -2504,7 +2516,15 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  			"editor-button": "Theme Editor",
  			"theme-editor": {
  				"title": "Theme Editor"
-@@ -540,6 +545,18 @@
+@@ -269,6 +274,7 @@
+ 				"bullet-point": "Restart app after changing this field"
+ 			},
+ 			"export-logs-button": "Export logs",
++			"export-logs-preparing": "Preparing the logs…",
+ 			"add-dev-conversations-button": "Add dev conversations",
+ 			"share-button": {
+ 				"title": "Share ID on discord",
+@@ -540,6 +546,18 @@
  		"need-restart": {
  			"title": "Restart required",
  			"desc": "Restart Berty to save your data and enable notifications!"
@@ -2928,6 +2948,87 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  			<WebViews url={CodeLicenseURL} />
  		</View>
  	)
+diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/DevTools/DevTools.tsx ./berty-bridge-expo/mobile/src/screens/settings/DevTools/DevTools.tsx
+--- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/DevTools/DevTools.tsx	2026-07-03 08:32:58.000000000 +0000
++++ ./berty-bridge-expo/mobile/src/screens/settings/DevTools/DevTools.tsx	2026-11-08 11:21:49.090279811 +0000
+@@ -3,9 +3,12 @@
+ import React, { useCallback, useEffect, useRef, useState } from "react";
+ import { useTranslation } from "react-i18next";
+ import {
++	ActivityIndicator,
+ 	Alert,
++	Modal,
+ 	Platform,
+ 	ScrollView,
++	Text as RNText,
+ 	Vibration,
+ 	View,
+ } from "react-native";
+@@ -436,6 +439,7 @@
+ 
+ 	const importingAccountAfterClosing = useImportingAccountAfterClosing();
+ 	const [isHandlingPress, setIsHandlingPress] = React.useState(false);
++	const [exportingLogs, setExportingLogs] = React.useState(false);
+ 	const accounts = useSelector(selectAccounts);
+ 	const switchAccount = useSwitchAccountAfterClosing();
+ 	const handlePress = React.useCallback(
+@@ -460,6 +464,37 @@
+ 				{ backgroundColor: colors["secondary-background"] },
+ 			]}
+ 		>
++			<Modal
++				transparent
++				visible={exportingLogs}
++				animationType="fade"
++				statusBarTranslucent
++				onRequestClose={() => {}}
++			>
++				<View
++					style={{
++						flex: 1,
++						alignItems: "center",
++						justifyContent: "center",
++						backgroundColor: "rgba(0, 0, 0, 0.5)",
++					}}
++				>
++					<View
++						style={{
++							alignItems: "center",
++							paddingVertical: 24,
++							paddingHorizontal: 32,
++							borderRadius: 12,
++							backgroundColor: colors["secondary-background"],
++						}}
++					>
++						<ActivityIndicator size="large" color={colors["secondary-text"]} />
++						<RNText style={{ marginTop: 16, color: colors["secondary-text"] }}>
++							{t("settings.devtools.export-logs-preparing", "Preparing the logs…")}
++						</RNText>
++					</View>
++				</View>
++			</Modal>
+ 			<ItemSection>
+ 				<AccountsDropdown
+ 					placeholder={t("settings.accounts.accounts-button")}
+@@ -648,8 +683,16 @@
+ 					iconSize={30}
+ 					iconColor={colors["alt-secondary-background-header"]}
+ 					onPress={async () => {
+-						// await logfileList()
+-						await exportLogfile(selectedAccount);
++						if (exportingLogs) {
++							return;
++						}
++						// reading the logs takes some time: show that something is happening
++						setExportingLogs(true);
++						try {
++							await exportLogfile(selectedAccount, () => setExportingLogs(false));
++						} finally {
++							setExportingLogs(false);
++						}
+ 					}}
+ 				/>
+ 				<StringOptionInput
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx ./berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx	2026-07-03 08:32:58.000000000 +0000
 +++ ./berty-bridge-expo/mobile/src/screens/settings/Faq/Faq.tsx	2026-11-01 20:11:38.000000000 +0000
@@ -3058,7 +3159,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  								iconName='wifi-outline'
 diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/accounts/accountUtils.ts ./berty-bridge-expo/mobile/src/utils/accounts/accountUtils.ts
 --- ../base/berty-2.471.14/berty-bridge-expo/mobile/src/utils/accounts/accountUtils.ts	2026-07-03 08:32:58.000000000 +0000
-+++ ./berty-bridge-expo/mobile/src/utils/accounts/accountUtils.ts	2026-11-04 19:25:17.531577687 +0000
++++ ./berty-bridge-expo/mobile/src/utils/accounts/accountUtils.ts	2026-11-08 11:21:49.089599418 +0000
 @@ -1,15 +1,13 @@
  import { Buffer } from 'buffer'
 -import { Platform } from 'react-native'
@@ -3076,13 +3177,16 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
  import { accountClient } from './accountClient'
  
  /**
-@@ -53,47 +51,94 @@
+@@ -52,48 +50,97 @@
+ 	}
  }
  
- export const exportLogfile = async (accountId: string | null) => {
+-export const exportLogfile = async (accountId: string | null) => {
 -	// tmp filename
 -	const fileName = `berty-log-${accountId}`
 -	const outFile = RNFS.TemporaryDirectoryPath + `/${fileName}` + '.log'
++// onSharing is called when the file is ready and the share sheet is about to be opened
++export const exportLogfile = async (accountId: string | null, onSharing?: () => void) => {
 +	const title = 'Export logs'
  
 -	// delete file if already exist
@@ -3187,6 +3291,7 @@ diff -ruN -x node_modules -x .git ../base/berty-2.471.14/berty-bridge-expo/mobil
 +		// The share sheet works on every Android version and on iOS. Writing straight into
 +		// the Download directory is not possible anymore with scoped storage (Android 11+),
 +		// the copy failed silently.
++		onSharing?.()
 +		await Share.open({
 +			title: 'Berty log',
 +			url: `file://${outFile}`,

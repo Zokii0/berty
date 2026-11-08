@@ -274,6 +274,7 @@
 				"bullet-point": "Restart app after changing this field"
 			},
 			"export-logs-button": "Export logs",
+			"export-logs-preparing": "Preparing the logs…",
 			"add-dev-conversations-button": "Add dev conversations",
 			"share-button": {
 				"title": "Share ID on discord",

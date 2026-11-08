@@ -50,7 +50,8 @@ export const refreshAccountList = async (): Promise<beapi.account.IAccountMetada
 	}
 }
 
-export const exportLogfile = async (accountId: string | null) => {
+// onSharing is called when the file is ready and the share sheet is about to be opened
+export const exportLogfile = async (accountId: string | null, onSharing?: () => void) => {
 	const title = 'Export logs'
 
 	if (!accountId) {
@@ -128,6 +129,7 @@ export const exportLogfile = async (accountId: string | null) => {
 		// The share sheet works on every Android version and on iOS. Writing straight into
 		// the Download directory is not possible anymore with scoped storage (Android 11+),
 		// the copy failed silently.
+		onSharing?.()
 		await Share.open({
 			title: 'Berty log',
 			url: `file://${outFile}`,
