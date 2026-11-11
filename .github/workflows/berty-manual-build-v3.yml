@@ -1,0 +1,73 @@
+name: Berty Manual Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_env:
+        description: "APP_ENV (preview = 'Berty Staff', installs next to the Play Store version)"
+        type: choice
+        options:
+          - preview
+          - development
+          - production
+        default: preview
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /usr/share/swift
+          df -h /
+
+      - name: Setup Go (version from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install app dependencies
+        working-directory: berty-bridge-expo/mobile
+        run: npm install
+
+      - name: Expo prebuild
+        working-directory: berty-bridge-expo/mobile
+        env:
+          APP_ENV: ${{ inputs.app_env }}
+          CI: "1"
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build APK
+        working-directory: berty-bridge-expo/mobile/android
+        env:
+          APP_ENV: ${{ inputs.app_env }}
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: berty-${{ inputs.app_env }}-apk
+          path: berty-bridge-expo/mobile/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
